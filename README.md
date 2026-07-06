@@ -115,21 +115,38 @@ Click ✕ to exit search
 Use A+ and A buttons in the header to increase or reset font size.
 
 V. File Storage Structure
+
 text
+
 storage/
+
 ├── img/                    # Images (by tab)
+
 │   └── {tab}/
+
 │       ├── temp/           # Temporary images (auto-promoted on save)
+
 │       └── *.jpg/png...
+
 ├── mov/                    # Videos (by tab)
+
 │   └── {tab}/
+
 │       └── *.mp4/webm...
+
+
 ├── att/                    # Attachments (by tab)
+
 │   └── {tab}/
+
 │       └── *.*
+
 ├── notes_{tab}.json        # Note databases
+
 ├── notes_backup_{tab}_{timestamp}.json
+
 ├── notes_export_{tab}.txt
+
 └── notes_tabs_order.json   # Tab order & names
 
 File ID Format: YYYYMMDDHHmmss_xxxxxx.ext (timestamp + random hex + original extension)
