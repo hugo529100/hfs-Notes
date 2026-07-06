@@ -30,6 +30,8 @@ TXT Export	Auto-export notes as TXT files on each backup
 Font Control	Increase (A+) or reset font size
 User Restrictions	Optional whitelist for allowed users
 Admin Panel	Overview, backup, import/export, clear tabs via API
+
+
 III. Configuration Options
 Config	Type	Default	Description
 tabList	Array	[{ name: 'General' }]	Define tabs. Each tab has independent storage
@@ -41,6 +43,7 @@ allowedUsers	List	[]	Whitelist of usernames (only when restrictUsers is true)
 
 IV. How to Use
 4.1 Opening Notes
+
 Click the ✐ Notes button in the HFS menu bar. The notes panel appears as:
 
 Desktop: Sliding panel on the right side
@@ -81,7 +84,10 @@ Type	Max Size	Storage	Tag Format
 Images	40MB	img/	[img:fileId]
 Videos	500MB	mov/	[mov:fileId]
 Others	500MB	att/	[att:fileId:name]
+
+
 4.5 Managing Notes
+
 Star: Click ★ on a note to mark as important
 
 Edit: Double-click a note to enter edit mode
@@ -93,6 +99,7 @@ Collapse/Expand: Click ▼/▶ to toggle long notes
 Copy: In edit mode, click 📋 to copy all content
 
 4.6 Searching
+
 Click Ϙ (search toggle) in the header
 
 Type search term - notes with matches are filtered
@@ -104,6 +111,7 @@ Active match is highlighted and scrolled into view
 Click ✕ to exit search
 
 4.7 Font Size
+
 Use A+ and A buttons in the header to increase or reset font size.
 
 V. File Storage Structure
@@ -123,9 +131,11 @@ storage/
 ├── notes_backup_{tab}_{timestamp}.json
 ├── notes_export_{tab}.txt
 └── notes_tabs_order.json   # Tab order & names
+
 File ID Format: YYYYMMDDHHmmss_xxxxxx.ext (timestamp + random hex + original extension)
 
 VI. Cleanup Mechanisms
+
 6.1 On Note Deletion
 All referenced images, videos, and attachments are deleted from storage
 
@@ -149,6 +159,7 @@ Removes temp images older than 1 hour
 Empty temp directories are removed
 
 VII. Video Player Behavior
+
 Videos use a lazy-load placeholder to save resources:
 
 Initial State: Dark background with ▶ play icon and "Click to play video" text
