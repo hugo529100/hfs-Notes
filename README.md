@@ -1,4 +1,4 @@
-在阅读下面用AI写的内容之前，我先简单介绍这个插件，为了满足我日常工作生活便捷需要而利用deepseek写下这个工具，并且会在随后的日子里不断使用、完善、优化，力求做到最纯粹的多设备同步的档案记录，值得注意的是需要登录后刷新页面才会出现这个按钮，由于我一直时个人工作使用，所以不会考虑多用户介入共用，虽然这是基于聊天插件进行改进开发，但我日常很少与人聊天，所以都基本是自言自语为主要用途，处于安全性考虑大家斟酌使用。
+在阅读下面用AI写的内容之前，我先简单介绍这个插件，为了满足我日常工作生活便捷需要而利用deepseek写下这个工具，并且会在随后的日子里不断使用、完善、优化，力求做到最纯粹的多设备同步的档案记录，值得注意的是需要登录后刷新页面才会出现这个按钮，由于我一直时个人工作使用，所以不会考虑多用户介入共用，虽然这是基于聊天插件进行改进开发，但我日常很少与人聊天，所以都基本是自言自语为主要用途，基于安全性考虑大家斟酌使用。
 
 Before reading the AI-generated content below, let me briefly introduce this plugin. I created this tool with the help of DeepSeek to meet the convenience needs of my daily work and life, and I will continue to use, refine, and optimize it over time, striving to make it the most streamlined multi-device synchronization archive tool possible. One thing to note is that you need to refresh the page after logging in for the button to appear. Since I have always used it for personal work, I do not consider multi-user shared access. Although this was developed based on a chat plugin, I rarely chat with others in daily life, so it is primarily used for self-dialogue. For security considerations, please use it with discretion.
 
