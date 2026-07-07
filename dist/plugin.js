@@ -52,7 +52,7 @@ exports.config = {
     ffmpeg_path: {
         type: 'real_path',
         fileMask: 'ffmpeg*',
-        defaultValue: '',
+        defaultValue: 'ffmpeg.exe',
         helperText: 'Path to FFmpeg executable. Leave empty if it\'s in the system path. Used for video thumbnail extraction.',
         xs: 6
     },
