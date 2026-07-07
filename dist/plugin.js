@@ -48,14 +48,30 @@ exports.config = {
         helperText: 'Only applies when "Restrict user access" is enabled above.',
         showIf: x => x.restrictUsers,
         frontend: true
+    },
+    ffmpeg_path: {
+        type: 'real_path',
+        fileMask: 'ffmpeg*',
+        defaultValue: '',
+        helperText: 'Path to FFmpeg executable. Leave empty if it\'s in the system path. Used for video thumbnail extraction.',
+        xs: 6
+    },
+    thumbnail_time: {
+        type: 'string',
+        defaultValue: '00:00:05',
+        label: 'Video thumbnail time position',
+        helperText: 'Time position for video thumbnail extraction (HH:MM:SS)',
+        xs: 6
     }
 }
 
 exports.init = async api => {
     const { getCurrentUsername } = api.require('./auth')
     const fs = api.require('fs/promises')
+    const fss = api.require('fs')
     const path = api.require('path')
     const crypto = api.require('crypto')
+    const { spawn } = api.require('child_process')
     const storage = api.storageDir
     
     const API_BASE = `${api.Const.API_URI}notes/`
@@ -63,15 +79,19 @@ exports.init = async api => {
     const IMG_BASE_DIR = path.join(storage, 'img')
     const MOV_BASE_DIR = path.join(storage, 'mov')
     const ATT_BASE_DIR = path.join(storage, 'att')
+    const THUMB_BASE_DIR = path.join(storage, 'thumb')
 
     const MAX_NOTE_LEN = 2000
     const RETAIN_NOTES = 500
     const SPAM_DELAY = 200
     const MAX_STORAGE_WARNING = 400
     const AUTO_COLLAPSE_LINES = 100
-    const MAX_IMG_SIZE = 40 * 1024 * 1024 // 40MB
-    const MAX_FILE_SIZE = 100 * 1024 * 1024 // 100MB
-    const TEMP_IMG_TTL = 60 * 60 * 1000 // 1 小時
+    const MAX_IMG_SIZE = 40 * 1024 * 1024
+    const MAX_FILE_SIZE = 100 * 1024 * 1024
+    const TEMP_IMG_TTL = 60 * 60 * 1000
+    const THUMB_PIXELS = 800
+    const THUMB_QUALITY = 90
+    const THUMB_MIN_SIZE = 100 * 1024
 
     const dbs = new Map()
     const backupTimers = {}
@@ -83,6 +103,7 @@ exports.init = async api => {
     await fs.mkdir(IMG_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(ATT_BASE_DIR, { recursive: true }).catch(() => {})
+    await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
     
     function isAllowed(username) {
         if (!username) return false
@@ -143,6 +164,11 @@ exports.init = async api => {
         return path.join(getTabImgDir(tab), 'temp')
     }
 
+    function getTabThumbDir(tab) {
+        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+        return path.join(THUMB_BASE_DIR, safeTab)
+    }
+
     function getTabMovDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
         return path.join(MOV_BASE_DIR, safeTab)
@@ -151,6 +177,44 @@ exports.init = async api => {
     function getTabAttDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
         return path.join(ATT_BASE_DIR, safeTab)
+    }
+
+    // 统一的文件名映射 - mov和att共用逻辑
+    function getNameMapPath(tab, type) {
+        const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
+        return path.join(dir, '.filenames')
+    }
+
+    async function saveFileName(tab, type, fileId, originalName) {
+        const mapPath = getNameMapPath(tab, type)
+        const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
+        await ensureDir(dir)
+        let nameMap = {}
+        try {
+            nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+        } catch {}
+        nameMap[fileId] = originalName
+        await fs.writeFile(mapPath, JSON.stringify(nameMap))
+    }
+
+    async function getFileName(tab, type, fileId) {
+        const mapPath = getNameMapPath(tab, type)
+        try {
+            const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+            return nameMap[fileId] || fileId
+        } catch {
+            return fileId
+        }
+    }
+
+    async function cleanFileNameMapping(tab, type, removedIds) {
+        if (removedIds.length === 0) return
+        const mapPath = getNameMapPath(tab, type)
+        try {
+            const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+            for (const id of removedIds) delete nameMap[id]
+            await fs.writeFile(mapPath, JSON.stringify(nameMap))
+        } catch {}
     }
 
     async function ensureDir(dir) {
@@ -167,7 +231,7 @@ exports.init = async api => {
 
     function extractMovIds(content) {
         if (!content) return []
-        const matches = content.match(/\[mov:(.+?)\]/g)
+        const matches = content.match(/\[mov:(.+?):/g)
         if (!matches) return []
         return matches.map(m => m.slice(5, -1))
     }
@@ -179,27 +243,181 @@ exports.init = async api => {
         return matches.map(m => m.slice(5, -1))
     }
 
-    // 將 temp 中的圖片移動到正式目錄
+    function parseTimeToSeconds(timeStr) {
+        if (!timeStr.includes(':')) {
+            return parseFloat(timeStr) || 0
+        }
+        const parts = timeStr.split(':')
+        if (parts.length !== 3) return 0
+        const hours = parseInt(parts[0]) || 0
+        const minutes = parseInt(parts[1]) || 0
+        const seconds = parseFloat(parts[2]) || 0
+        return hours * 3600 + minutes * 60 + seconds
+    }
+
+    function formatTimeFromSeconds(seconds) {
+        const hrs = Math.floor(seconds / 3600)
+        const mins = Math.floor((seconds % 3600) / 60)
+        const secs = Math.floor(seconds % 60)
+        return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    }
+
+    // 视频缩略图提取
+    async function extractVideoThumbnail(videoPath, tab, fileId) {
+        try {
+            const ffmpegPath = api.getConfig('ffmpeg_path') || 'ffmpeg'
+            const thumbTimeConfig = api.getConfig('thumbnail_time') || '00:00:05'
+            
+            let timeInSeconds
+            if (thumbTimeConfig.includes(':')) {
+                timeInSeconds = parseTimeToSeconds(thumbTimeConfig)
+            } else {
+                timeInSeconds = parseInt(thumbTimeConfig) || 5
+            }
+            
+            const thumbDir = await ensureDir(getTabThumbDir(tab))
+            // 缩略图使用与视频文件相同的 fileId，但扩展名改为 .jpg
+            const ext = path.extname(fileId)
+            const baseName = path.basename(fileId, ext)
+            const thumbId = baseName + '.jpg'
+            const thumbPath = path.join(thumbDir, thumbId)
+            
+            // 检查缩略图是否已存在
+            try {
+                await fs.stat(thumbPath)
+                return true
+            } catch {}
+            
+            return new Promise(resolve => {
+                const ffmpeg = spawn(ffmpegPath, [
+                    '-ss', formatTimeFromSeconds(timeInSeconds),
+                    '-i', videoPath,
+                    '-vframes', '1',
+                    '-q:v', '2',
+                    '-f', 'image2',
+                    '-y', thumbPath
+                ])
+                
+                let stderr = ''
+                ffmpeg.stderr.on('data', data => {
+                    stderr += data.toString()
+                })
+                
+                ffmpeg.on('exit', code => {
+                    if (code === 0) {
+                        resolve(true)
+                    } else {
+                        // 清理失败的文件
+                        fs.unlink(thumbPath).catch(() => {})
+                        resolve(false)
+                    }
+                })
+                
+                ffmpeg.on('error', err => {
+                    fs.unlink(thumbPath).catch(() => {})
+                    resolve(false)
+                })
+            })
+        } catch (e) {
+            return false
+        }
+    }
+
+    // 删除视频缩略图
+    async function deleteVideoThumbnail(tab, fileId) {
+        try {
+            const thumbDir = getTabThumbDir(tab)
+            const ext = path.extname(fileId)
+            const baseName = path.basename(fileId, ext)
+            const thumbId = baseName + '.jpg'
+            const thumbPath = path.join(thumbDir, thumbId)
+            await fs.unlink(thumbPath).catch(() => {})
+        } catch {}
+    }
+
+    async function generateThumbnail(imageBuffer, outputPath) {
+        try {
+            const sharp = api.require('sharp')
+            if (!sharp) return false
+            
+            const metadata = await sharp(imageBuffer).metadata()
+            if (metadata.format === 'gif') return false
+            
+            if (imageBuffer.length < THUMB_MIN_SIZE) return false
+            
+            await sharp(imageBuffer)
+                .resize(THUMB_PIXELS, THUMB_PIXELS, { fit: 'inside', withoutEnlargement: true })
+                .rotate()
+                .jpeg({ quality: THUMB_QUALITY })
+                .toFile(outputPath)
+            return true
+        } catch (e) {
+            try {
+                const sharpResult = api.customApiCall?.('sharp', imageBuffer)?.[0]
+                if (sharpResult) {
+                    if (imageBuffer.length < THUMB_MIN_SIZE) return false
+                    
+                    const thumbBuffer = await sharpResult
+                        .resize(THUMB_PIXELS, THUMB_PIXELS, { fit: 'inside', withoutEnlargement: true })
+                        .rotate()
+                        .jpeg({ quality: THUMB_QUALITY })
+                        .toBuffer()
+                    await fs.writeFile(outputPath, Buffer.from(thumbBuffer))
+                    return true
+                }
+            } catch (e2) {}
+            return false
+        }
+    }
+
+    // 检查缩略图是否存在（支持图片和视频）
+    function hasThumbnail(tab, mediaId) {
+        const thumbDir = getTabThumbDir(tab)
+        
+        // 首先检查原始文件名（图片）
+        let thumbPath = path.join(thumbDir, mediaId)
+        if (fss.existsSync(thumbPath)) return true
+        
+        // 检查视频对应的缩略图（用 .jpg 扩展名）
+        const ext = path.extname(mediaId)
+        if (['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv', '.flv'].includes(ext.toLowerCase())) {
+            const baseName = path.basename(mediaId, ext)
+            thumbPath = path.join(thumbDir, baseName + '.jpg')
+            if (fss.existsSync(thumbPath)) return true
+        }
+        
+        return false
+    }
+
+    // 获取视频缩略图 URL 路径
+    function getVideoThumbPath(tab, fileId) {
+        const ext = path.extname(fileId)
+        const baseName = path.basename(fileId, ext)
+        return `/~/notes/thumb/${tab}/${baseName}.jpg`
+    }
+
     async function promoteImages(tab, imageIds) {
         const imgDir = getTabImgDir(tab)
         const tempDir = getTempDir(tab)
+        const thumbDir = await ensureDir(getTabThumbDir(tab))
         const promoted = []
         
         for (const id of imageIds) {
             const tempPath = path.join(tempDir, id)
             const finalPath = path.join(imgDir, id)
+            const thumbPath = path.join(thumbDir, id)
             try {
                 await fs.stat(tempPath)
+                const imgBuffer = await fs.readFile(tempPath)
+                await generateThumbnail(imgBuffer, thumbPath)
                 await fs.rename(tempPath, finalPath)
                 promoted.push(id)
             } catch {
-                // 文件不在 temp 中，可能已經在正式目錄
             }
         }
         return promoted
     }
 
-    // 清理孤兒 temp 圖片
     async function cleanupTempImages() {
         try {
             const cutoff = Date.now() - TEMP_IMG_TTL
@@ -218,7 +436,6 @@ exports.init = async api => {
                             }
                         } catch {}
                     }
-                    // 如果 temp 目錄為空，刪除它
                     const remaining = await fs.readdir(tempDir).catch(() => [])
                     if (remaining.length === 0) {
                         await fs.rmdir(tempDir).catch(() => {})
@@ -322,7 +539,6 @@ exports.init = async api => {
             await exportTxtFiles()
         }, intervalMs)
         
-        // 每小時清理一次孤兒 temp 圖片
         tempCleanupTimer = setInterval(async () => {
             await cleanupTempImages()
         }, 60 * 60 * 1000)
@@ -446,7 +662,44 @@ exports.init = async api => {
         const db = await getDb(tab)
         const notes = await db.asObject()
         const count = Object.keys(notes).length
-        ctx.body = { notes, count, warning: count >= MAX_STORAGE_WARNING, maxRetain: RETAIN_NOTES }
+        
+        // 返回缩略图是否存在的信息（包括图片和视频）
+        const imageIds = new Set()
+        const movIds = new Set()
+        for (const note of Object.values(notes)) {
+            if (note.m) {
+                for (const id of extractImageIds(note.m)) imageIds.add(id)
+                for (const id of extractMovIds(note.m)) movIds.add(id)
+            }
+        }
+        
+        const thumbMap = {}
+        for (const id of imageIds) {
+            thumbMap[id] = hasThumbnail(tab, id)
+        }
+        // 检查视频缩略图
+        for (const id of movIds) {
+            thumbMap[id] = hasThumbnail(tab, id)
+        }
+        
+        // 返回文件名映射（用于旧数据兼容）
+        let fileNames = {}
+        try {
+            fileNames = JSON.parse(await fs.readFile(getNameMapPath(tab, 'mov'), 'utf-8'))
+        } catch {}
+        try {
+            const attNames = JSON.parse(await fs.readFile(getNameMapPath(tab, 'att'), 'utf-8'))
+            Object.assign(fileNames, attNames)
+        } catch {}
+        
+        ctx.body = { 
+            notes, 
+            count, 
+            warning: count >= MAX_STORAGE_WARNING, 
+            maxRetain: RETAIN_NOTES,
+            thumbMap,
+            fileNames
+        }
         ctx.status = 200
     }
 
@@ -485,9 +738,21 @@ exports.init = async api => {
         const lineCount = m.split('\n').length
         const autoCollapsed = forceCollapsed || lineCount > AUTO_COLLAPSE_LINES
         
-        // 將內容中的 temp 圖片移動到正式目錄
         const imageIds = extractImageIds(m)
         await promoteImages(tab, imageIds)
+        
+        // 为新上传的视频提取缩略图
+        const movIds = extractMovIds(m)
+        if (movIds.length > 0) {
+            const movDir = getTabMovDir(tab)
+            for (const movId of movIds) {
+                const videoPath = path.join(movDir, movId)
+                try {
+                    await fs.stat(videoPath)
+                    extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
+                } catch {}
+            }
+        }
         
         db.put(ts, { m, u: username, starred: false, collapsed: autoCollapsed })
         const count = db.size()
@@ -519,25 +784,27 @@ exports.init = async api => {
         if (!note) { ctx.status = 404; return }
         if (note.u !== username) { ctx.status = 403; return }
         
-        // 刪除不再引用的圖片
         const oldImgIds = extractImageIds(note.m)
         const newImgIds = extractImageIds(m)
         const removedImgIds = oldImgIds.filter(id => !newImgIds.includes(id))
         const imgDir = getTabImgDir(tab)
+        const thumbDir = getTabThumbDir(tab)
         for (const id of removedImgIds) {
             await fs.unlink(path.join(imgDir, id)).catch(() => {})
+            await fs.unlink(path.join(thumbDir, id)).catch(() => {})
         }
         
-        // 刪除不再引用的視頻
         const oldMovIds = extractMovIds(note.m)
         const newMovIds = extractMovIds(m)
         const removedMovIds = oldMovIds.filter(id => !newMovIds.includes(id))
         const movDir = getTabMovDir(tab)
         for (const id of removedMovIds) {
             await fs.unlink(path.join(movDir, id)).catch(() => {})
+            // 同步删除视频缩略图
+            await deleteVideoThumbnail(tab, id)
         }
+        await cleanFileNameMapping(tab, 'mov', removedMovIds)
         
-        // 刪除不再引用的附件
         const oldAttIds = extractAttIds(note.m)
         const newAttIds = extractAttIds(m)
         const removedAttIds = oldAttIds.filter(id => !newAttIds.includes(id))
@@ -545,9 +812,20 @@ exports.init = async api => {
         for (const id of removedAttIds) {
             await fs.unlink(path.join(attDir, id)).catch(() => {})
         }
+        await cleanFileNameMapping(tab, 'att', removedAttIds)
         
-        // 將新增的 temp 圖片移動到正式目錄
         await promoteImages(tab, newImgIds)
+        
+        // 为新上传的视频提取缩略图
+        for (const movId of newMovIds) {
+            if (!oldMovIds.includes(movId)) {
+                const videoPath = path.join(movDir, movId)
+                try {
+                    await fs.stat(videoPath)
+                    extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
+                } catch {}
+            }
+        }
         
         db.put(ts, { m, u: username, starred: note.starred || false, collapsed: note.collapsed || false })
         api.notifyClient('notes', 'updateNote', { ts, tab, m, starred: note.starred || false, collapsed: note.collapsed || false })
@@ -617,28 +895,30 @@ exports.init = async api => {
         if (!note) { ctx.status = 404; return }
         if (note.u !== username) { ctx.status = 403; return }
         
-        // 刪除關聯文件
         if (note.m) {
-            // 刪除圖片
             const imgIds = extractImageIds(note.m)
             const imgDir = getTabImgDir(tab)
+            const thumbDir = getTabThumbDir(tab)
             for (const id of imgIds) {
                 await fs.unlink(path.join(imgDir, id)).catch(() => {})
+                await fs.unlink(path.join(thumbDir, id)).catch(() => {})
             }
             
-            // 刪除視頻
             const movIds = extractMovIds(note.m)
             const movDir = getTabMovDir(tab)
             for (const id of movIds) {
                 await fs.unlink(path.join(movDir, id)).catch(() => {})
+                // 同步删除视频缩略图
+                await deleteVideoThumbnail(tab, id)
             }
+            await cleanFileNameMapping(tab, 'mov', movIds)
             
-            // 刪除附件
             const attIds = extractAttIds(note.m)
             const attDir = getTabAttDir(tab)
             for (const id of attIds) {
                 await fs.unlink(path.join(attDir, id)).catch(() => {})
             }
+            await cleanFileNameMapping(tab, 'att', attIds)
         }
         
         db.del(ts)
@@ -748,12 +1028,30 @@ exports.init = async api => {
                         imgStats.totalSize += fstat.size
                     } catch {}
                 }
-                // 統計 temp 文件
                 const tempDir = path.join(dirPath, 'temp')
                 try {
                     const tempFiles = await fs.readdir(tempDir)
                     imgStats.tempCount += tempFiles.length
                 } catch {}
+            }
+        } catch {}
+        
+        let thumbStats = { count: 0, totalSize: 0, tabs: {} }
+        try {
+            const tabDirs = await fs.readdir(THUMB_BASE_DIR).catch(() => [])
+            for (const dirName of tabDirs) {
+                const dirPath = path.join(THUMB_BASE_DIR, dirName)
+                const stat = await fs.stat(dirPath).catch(() => null)
+                if (!stat || !stat.isDirectory()) continue
+                const files = await fs.readdir(dirPath).catch(() => [])
+                thumbStats.tabs[dirName] = files.length
+                thumbStats.count += files.length
+                for (const f of files) {
+                    try {
+                        const fstat = await fs.stat(path.join(dirPath, f))
+                        thumbStats.totalSize += fstat.size
+                    } catch {}
+                }
             }
         } catch {}
         
@@ -765,9 +1063,10 @@ exports.init = async api => {
                 const stat = await fs.stat(dirPath).catch(() => null)
                 if (!stat || !stat.isDirectory()) continue
                 const files = await fs.readdir(dirPath).catch(() => [])
-                movStats.tabs[dirName] = files.length
-                movStats.count += files.length
-                for (const f of files) {
+                const realFiles = files.filter(f => f !== '.filenames')
+                movStats.tabs[dirName] = realFiles.length
+                movStats.count += realFiles.length
+                for (const f of realFiles) {
                     try {
                         const fstat = await fs.stat(path.join(dirPath, f))
                         movStats.totalSize += fstat.size
@@ -784,9 +1083,10 @@ exports.init = async api => {
                 const stat = await fs.stat(dirPath).catch(() => null)
                 if (!stat || !stat.isDirectory()) continue
                 const files = await fs.readdir(dirPath).catch(() => [])
-                attStats.tabs[dirName] = files.length
-                attStats.count += files.length
-                for (const f of files) {
+                const realFiles = files.filter(f => f !== '.filenames')
+                attStats.tabs[dirName] = realFiles.length
+                attStats.count += realFiles.length
+                for (const f of realFiles) {
                     try {
                         const fstat = await fs.stat(path.join(dirPath, f))
                         attStats.totalSize += fstat.size
@@ -804,7 +1104,9 @@ exports.init = async api => {
                 backupRetentionDays: api.getConfig('backupRetentionDays'),
                 autoExportTxt: api.getConfig('autoExportTxt'),
                 maxImgSize: formatBytes(MAX_IMG_SIZE),
-                maxFileSize: formatBytes(MAX_FILE_SIZE)
+                maxFileSize: formatBytes(MAX_FILE_SIZE),
+                ffmpegPath: api.getConfig('ffmpeg_path') || 'ffmpeg',
+                thumbnailTime: api.getConfig('thumbnail_time') || '00:00:05'
             },
             databases: dbInfo, totalNotes,
             storageWarning: totalNotes >= MAX_STORAGE_WARNING, backups,
@@ -812,6 +1114,10 @@ exports.init = async api => {
             imgStats: {
                 ...imgStats,
                 sizeReadable: formatBytes(imgStats.totalSize)
+            },
+            thumbStats: {
+                ...thumbStats,
+                sizeReadable: formatBytes(thumbStats.totalSize)
             },
             movStats: {
                 ...movStats,
@@ -934,25 +1240,25 @@ exports.init = async api => {
         const notes = await db.asObject()
         const imgDir = getTabImgDir(tab)
         const tempDir = getTempDir(tab)
+        const thumbDir = getTabThumbDir(tab)
         const movDir = getTabMovDir(tab)
         const attDir = getTabAttDir(tab)
         
-        // 刪除關聯文件
         for (const note of Object.values(notes)) {
             if (note.m) {
-                // 刪除圖片
                 const imgIds = extractImageIds(note.m)
                 for (const id of imgIds) {
                     await fs.unlink(path.join(imgDir, id)).catch(() => {})
+                    await fs.unlink(path.join(thumbDir, id)).catch(() => {})
                 }
                 
-                // 刪除視頻
                 const movIds = extractMovIds(note.m)
                 for (const id of movIds) {
                     await fs.unlink(path.join(movDir, id)).catch(() => {})
+                    // 同步删除视频缩略图
+                    await deleteVideoThumbnail(tab, id)
                 }
                 
-                // 刪除附件
                 const attIds = extractAttIds(note.m)
                 for (const id of attIds) {
                     await fs.unlink(path.join(attDir, id)).catch(() => {})
@@ -960,25 +1266,27 @@ exports.init = async api => {
             }
         }
         
-        // 刪除所有 temp 圖片
         try {
             const tempFiles = await fs.readdir(tempDir)
-            for (const f of tempFiles) {
-                await fs.unlink(path.join(tempDir, f)).catch(() => {})
-            }
+            for (const f of tempFiles) await fs.unlink(path.join(tempDir, f)).catch(() => {})
             await fs.rmdir(tempDir).catch(() => {})
         } catch {}
         
-        // 清理 mov 目錄殘留文件
+        try {
+            const thumbFiles = await fs.readdir(thumbDir).catch(() => [])
+            for (const f of thumbFiles) await fs.unlink(path.join(thumbDir, f)).catch(() => {})
+        } catch {}
+        
         try {
             const movFiles = await fs.readdir(movDir).catch(() => [])
             for (const f of movFiles) await fs.unlink(path.join(movDir, f)).catch(() => {})
+            await fs.unlink(path.join(movDir, '.filenames')).catch(() => {})
         } catch {}
         
-        // 清理 att 目錄殘留文件
         try {
             const attFiles = await fs.readdir(attDir).catch(() => [])
             for (const f of attFiles) await fs.unlink(path.join(attDir, f)).catch(() => {})
+            await fs.unlink(path.join(attDir, '.filenames')).catch(() => {})
         } catch {}
         
         const count = db.size()
@@ -1035,7 +1343,7 @@ exports.init = async api => {
             const matches = body.data.match(/^data:image\/(\w+);base64,(.+)$/)
             if (!matches) {
                 ctx.status = 400
-                ctx.body = { error: 'Invalid base64 format. Expected: data:image/xxx;base64,...' }
+                ctx.body = { error: 'Invalid base64 format' }
                 return
             }
             
@@ -1054,18 +1362,21 @@ exports.init = async api => {
                 return
             }
             
-            // 圖片先存到 temp 目錄
             const tempDir = await ensureDir(getTempDir(tab))
             const imageId = generateFileId(originalName)
             const filePath = path.join(tempDir, imageId)
             
             await fs.writeFile(filePath, fileBuffer)
             
-            // 圖片暫時通過 temp 路徑訪問
+            const thumbDir = await ensureDir(getTabThumbDir(tab))
+            const thumbPath = path.join(thumbDir, imageId)
+            const hasThumb = await generateThumbnail(fileBuffer, thumbPath)
+            
             ctx.body = { 
                 ok: true, 
                 imageId,
-                url: `/~/notes/img/temp/${tab}/${imageId}`
+                url: `/~/notes/img/temp/${tab}/${imageId}`,
+                hasThumb: hasThumb
             }
             ctx.status = 200
         } catch (e) {
@@ -1098,20 +1409,44 @@ exports.init = async api => {
             }
 
             const isVideo = mimeType.startsWith('video/')
-            const isOther = !isVideo
+            const isAudio = mimeType.startsWith('audio/')
+            const isMedia = isVideo || isAudio
 
-            if (isVideo) {
+            if (isMedia) {
                 const movDir = await ensureDir(getTabMovDir(tab))
                 const fileId = generateFileId(originalName)
                 const filePath = path.join(movDir, fileId)
                 await fs.writeFile(filePath, fileBuffer)
-                ctx.body = { ok: true, isVideo: true, fileId, url: `/~/notes/mov/${tab}/${fileId}`, name: originalName }
+                await saveFileName(tab, 'mov', fileId, originalName)
+                
+                // 如果是视频，异步提取缩略图
+                let hasVideoThumb = false
+                if (isVideo) {
+                    hasVideoThumb = await extractVideoThumbnail(filePath, tab, fileId)
+                }
+                
+                ctx.body = { 
+                    ok: true, 
+                    isVideo: isVideo, 
+                    isAudio: isAudio, 
+                    fileId, 
+                    url: `/~/notes/mov/${tab}/${fileId}`, 
+                    name: originalName,
+                    hasVideoThumb: hasVideoThumb
+                }
             } else {
                 const attDir = await ensureDir(getTabAttDir(tab))
                 const fileId = generateFileId(originalName)
                 const filePath = path.join(attDir, fileId)
                 await fs.writeFile(filePath, fileBuffer)
-                ctx.body = { ok: true, isOther: true, fileId, url: `/~/notes/att/${tab}/${fileId}`, name: originalName }
+                await saveFileName(tab, 'att', fileId, originalName)
+                ctx.body = { 
+                    ok: true, 
+                    isOther: true, 
+                    fileId, 
+                    url: `/~/notes/att/${tab}/${fileId}`, 
+                    name: originalName 
+                }
             }
             ctx.status = 200
         } catch (e) {
@@ -1129,15 +1464,12 @@ exports.init = async api => {
         let filePath
         
         if (isTemp) {
-            // temp 圖片路徑
             filePath = path.join(getTempDir(tab), imageId)
         } else {
-            // 正式圖片路徑（也嘗試 temp）
             filePath = path.join(getTabImgDir(tab), imageId)
             try {
                 await fs.stat(filePath)
             } catch {
-                // 正式路徑找不到，嘗試 temp
                 filePath = path.join(getTempDir(tab), imageId)
             }
         }
@@ -1146,21 +1478,36 @@ exports.init = async api => {
             await fs.stat(filePath)
             const ext = path.extname(imageId).slice(1).toLowerCase()
             const mimeTypes = {
-                'jpg': 'image/jpeg',
-                'jpeg': 'image/jpeg',
-                'png': 'image/png',
-                'gif': 'image/gif',
-                'webp': 'image/webp',
-                'bmp': 'image/bmp',
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                'png': 'image/png', 'gif': 'image/gif',
+                'webp': 'image/webp', 'bmp': 'image/bmp',
                 'svg': 'image/svg+xml'
             }
             ctx.type = mimeTypes[ext] || 'application/octet-stream'
-            ctx.set('Cache-Control', 'no-cache, no-store, must-revalidate')
-            ctx.set('Pragma', 'no-cache')
-            ctx.set('Expires', '0')
+            ctx.set('Cache-Control', 'no-cache')
             ctx.body = await fs.readFile(filePath)
             ctx.status = 200
         } catch {
+            ctx.status = 404
+        }
+    }
+    
+    async function serveThumb(ctx) {
+        const tab = ctx.params?.tab
+        const thumbId = ctx.params?.thumbId
+        
+        if (!tab || !thumbId) { ctx.status = 404; return }
+        
+        const thumbPath = path.join(getTabThumbDir(tab), thumbId)
+        
+        try {
+            await fs.stat(thumbPath)
+            ctx.type = 'image/jpeg'
+            ctx.set('Cache-Control', 'public, max-age=3600')
+            ctx.body = await fs.readFile(thumbPath)
+            ctx.status = 200
+        } catch {
+            // 缩略图不存在，直接404，让前端使用原图
             ctx.status = 404
         }
     }
@@ -1171,13 +1518,48 @@ exports.init = async api => {
         if (!tab || !fileId) { ctx.status = 404; return }
         const filePath = path.join(getTabMovDir(tab), fileId)
         try {
-            await fs.stat(filePath)
+            const stat = await fs.stat(filePath)
+            const fileSize = stat.size
             const ext = path.extname(fileId).slice(1).toLowerCase()
-            const mimeMap = { 'mp4': 'video/mp4', 'webm': 'video/webm', 'ogg': 'video/ogg', 'mov': 'video/quicktime' }
-            ctx.type = mimeMap[ext] || 'video/mp4'
+            const mimeMap = { 
+                'mp4': 'video/mp4', 'webm': 'video/webm', 
+                'ogg': 'video/ogg', 'mov': 'video/quicktime',
+                'mp3': 'audio/mpeg', 'wav': 'audio/wav',
+                'flac': 'audio/flac', 'aac': 'audio/aac',
+                'm4a': 'audio/mp4', 'opus': 'audio/opus'
+            }
+            ctx.type = mimeMap[ext] || 'application/octet-stream'
+            ctx.set('Accept-Ranges', 'bytes')
+            
+            const originalName = await getFileName(tab, 'mov', fileId)
+            ctx.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(originalName)}`)
+            
+            const range = ctx.get('Range')
+            if (range) {
+                const parts = range.replace(/bytes=/, '').split('-')
+                const start = parseInt(parts[0], 10)
+                const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
+                
+                if (start >= fileSize) {
+                    ctx.status = 416
+                    ctx.set('Content-Range', `bytes */${fileSize}`)
+                    return
+                }
+                
+                const chunksize = (end - start) + 1
+                
+                ctx.status = 206
+                ctx.set('Content-Range', `bytes ${start}-${end}/${fileSize}`)
+                ctx.set('Content-Length', String(chunksize))
+                
+                const stream = fss.createReadStream(filePath, { start, end })
+                ctx.body = stream
+            } else {
+                ctx.set('Content-Length', String(fileSize))
+                ctx.body = fss.createReadStream(filePath)
+            }
+            
             ctx.set('Cache-Control', 'no-cache')
-            ctx.body = await fs.readFile(filePath)
-            ctx.status = 200
         } catch { ctx.status = 404 }
     }
 
@@ -1188,9 +1570,12 @@ exports.init = async api => {
         const filePath = path.join(getTabAttDir(tab), fileId)
         try {
             await fs.stat(filePath)
+            
+            const originalName = await getFileName(tab, 'att', fileId)
+            
             ctx.type = 'application/octet-stream'
             ctx.set('Cache-Control', 'no-cache')
-            ctx.set('Content-Disposition', `attachment; filename="${fileId}"`)
+            ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(originalName)}`)
             ctx.body = await fs.readFile(filePath)
             ctx.status = 200
         } catch { ctx.status = 404 }
@@ -1201,15 +1586,20 @@ exports.init = async api => {
             const p = ctx.path
             const method = ctx.method.toUpperCase()
             
-            // 圖片路由 - 無權限檢查
-            // 支援 /~/notes/img/temp/{tab}/{imageId} 和 /~/notes/img/{tab}/{imageId}
+            if (p.startsWith('/~/notes/thumb/')) {
+                const parts = p.replace('/~/notes/thumb/', '').split('/')
+                if (parts.length >= 2) {
+                    ctx.params = { tab: parts[0], thumbId: parts.slice(1).join('/') }
+                    await serveThumb(ctx)
+                } else { ctx.status = 404 }
+                return
+            }
+            
             if (p.startsWith('/~/notes/img/')) {
                 const pathParts = p.replace('/~/notes/img/', '').split('/')
                 if (pathParts[0] === 'temp' && pathParts.length >= 3) {
-                    // temp 圖片
                     ctx.params = { isTemp: 'temp', tab: pathParts[1], imageId: pathParts.slice(2).join('/') }
                 } else if (pathParts.length >= 2) {
-                    // 正式圖片
                     ctx.params = { isTemp: 'false', tab: pathParts[0], imageId: pathParts.slice(1).join('/') }
                 } else {
                     ctx.status = 404; return
@@ -1218,7 +1608,6 @@ exports.init = async api => {
                 return
             }
             
-            // 視頻路由
             if (p.startsWith('/~/notes/mov/')) {
                 const parts = p.replace('/~/notes/mov/', '').split('/')
                 if (parts.length >= 2) {
@@ -1228,7 +1617,6 @@ exports.init = async api => {
                 return
             }
             
-            // 附件路由
             if (p.startsWith('/~/notes/att/')) {
                 const parts = p.replace('/~/notes/att/', '').split('/')
                 if (parts.length >= 2) {

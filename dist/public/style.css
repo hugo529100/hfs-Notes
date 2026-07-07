@@ -1,5 +1,10 @@
 :root {
     --notes-border: var(--text);
+    --comment-contrast: rgba(58, 58, 58, 0.85);
+}
+
+:root .theme-dark {
+	--comment-contrast: rgba(214, 214, 214, 0.63);
 }
 
 .note-overlay {
@@ -99,6 +104,11 @@
     font-family: monospace;
     white-space: nowrap;
     font-size: 0.8em;
+}
+
+.note-usage-full {
+    color: #fe5757 !important;
+    font-weight: bold;
 }
 
 .note-panel-title {
@@ -664,6 +674,12 @@
     text-align: center;
 }
 
+.note-full-banner {
+    background: rgba(254,87,87,0.2);
+    border: 2px solid rgba(254,87,87,0.5);
+    font-weight: bold;
+}
+
 .note-input-form {
     display: flex;
     padding: 8px 10px;
@@ -708,6 +724,11 @@
     opacity: 0.6;
 }
 
+.note-input-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .note-send-btn {
     padding: 8px 14px;
     background: var(--ghost-contrast);
@@ -721,6 +742,12 @@
     user-select: none;
     -webkit-user-select: none;
     white-space: nowrap;
+}
+
+.note-send-btn-disabled {
+    opacity: 0.4;
+    cursor: not-allowed !important;
+    background: var(--faint-contrast) !important;
 }
 
 @media (max-width: 768px) {
@@ -825,6 +852,29 @@
     display: block;
     margin: 4px 0;
     border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.5s ease-in-out;
+}
+
+.note-inline-img[data-loaded="true"] {
+    opacity: 1;
+}
+
+.note-inline-img[data-is-thumb="true"] {
+    cursor: zoom-in;
+}
+
+.note-inline-img[data-is-thumb="true"]:hover {
+    opacity: 0.9;
+}
+
+.note-inline-img[data-is-thumb="false"] {
+    cursor: zoom-out;
+    width: 100%;
+}
+
+.note-inline-img[src$=".gif"] {
+    cursor: default;
 }
 
 .note-img-upload-btn {
@@ -850,6 +900,7 @@
     line-height: 1;
     transition: opacity 0.2s;
 }
+
 .note-dragging {
     outline: 3px dashed var(--text);
     outline-offset: -3px;
@@ -877,7 +928,6 @@
     font-size: 18px;
 }
 
-/* 視頻播放器簡潔界面 */
 .note-inline-mov {
     margin: 6px 0;
     border-radius: 4px;
@@ -932,7 +982,7 @@
 .note-mov-play-icon {
     font-size: 22px;
     color: var(--text);
-    margin-left: 3px; /* 视觉居中调整 */
+    margin-left: 3px;
 }
 
 .note-mov-placeholder-info {
@@ -956,7 +1006,141 @@
     border-radius: 4px;
 }
 
-/* 附件下載鏈接 */
+/* 视频缩略图封面样式 */
+.note-mov-thumb-cover {
+    position: relative;
+    width: 100%;
+    cursor: pointer;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.note-mov-thumb-img {
+    width: 100%;
+    height: auto;
+    display: block;
+    object-fit: cover;
+    border-radius: 4px;
+    max-height: 300px;
+}
+
+.note-mov-thumb-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+.note-mov-thumb-overlay:hover {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.note-mov-thumb-overlay .note-mov-placeholder-bg {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.note-mov-thumb-overlay:hover .note-mov-placeholder-bg {
+    background: rgba(255, 255, 255, 0.35);
+    transform: scale(1.05);
+}
+
+.note-mov-thumb-overlay .note-mov-play-icon {
+    font-size: 22px;
+    color: #fff;
+    margin-left: 3px;
+}
+
+.note-mov-thumb-overlay .note-mov-placeholder-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.note-mov-thumb-overlay .note-mov-placeholder-text {
+    font-size: 0.85em;
+    color: #fff;
+    user-select: none;
+}
+
+.note-mov-thumb-overlay .note-mov-filename {
+    font-size: 0.7em;
+    color: rgba(255, 255, 255, 0.7);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: monospace;
+}
+
+.note-inline-audio {
+    margin: 6px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--button-bg);
+    border: 1px solid var(--faint-contrast);
+}
+
+.note-audio-wrapper {
+    padding: 8px 10px;
+}
+
+.note-audio-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 0.85em;
+    color: var(--text);
+    opacity: 0.8;
+}
+
+.note-audio-icon {
+    font-size: 1.2em;
+    flex-shrink: 0;
+}
+
+.note-audio-filename {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: monospace;
+    font-size: 0.8em;
+}
+
+.note-audio-player {
+    width: 100%;
+    max-width: 100%;
+    height: 36px;
+    border-radius: 4px;
+    background: var(--bg);
+    outline: none;
+}
+
+.note-audio-player::-webkit-media-controls-panel {
+    background: var(--bg);
+}
+
+.note-audio-player::-webkit-media-controls-current-time-display,
+.note-audio-player::-webkit-media-controls-time-remaining-display {
+    color: var(--text);
+}
+
 .note-inline-att {
     display: inline-flex;
     align-items: center;
@@ -981,4 +1165,89 @@
 }
 .note-att-link:hover {
     opacity: 0.8;
+}
+
+/* 封面折叠样式 - 移除右上角时间标识，支持文字换行 */
+
+.note-item-has-cover {
+    overflow: hidden;
+    height: 138px;
+    min-height: 138px;
+}
+
+.note-item-has-cover .note-header-row {
+    margin-bottom: 0;
+    border-bottom: none;
+    border-radius: 0;
+    border-radius: 4px;
+}
+
+.note-cover-wrapper {
+    cursor: pointer;
+    position: relative;
+    width: 100%;
+    top: 1px;
+}
+
+.note-cover-image-container {
+    position: relative;
+    width: 100%;
+    height: 160px;
+    min-height: 160px;
+    max-height: 160px;
+    overflow: hidden;
+}
+
+.note-cover-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /*object-position: center;*/
+    object-position: 0 65%;
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    border-radius: 4px;
+}
+
+.note-cover-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 85px;
+    /*background: linear-gradient(transparent, rgb(0, 0, 0));*/
+    background: var(--bg);
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.8;
+}
+
+/* 封面文字支持换行 */
+.note-cover-text {
+    position: absolute;
+    bottom: 27px;
+    left: 10px;
+    right: 10px;
+    color: var(--comment-contrast);
+    font-size: 1.0em;
+    line-height: 1.3;
+    max-height: 3.9em;
+    overflow: hidden;
+    pointer-events: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    z-index: 2;
+    text-shadow: 0px 0px 4px var(--bg);
+}
+
+/* 移除封面右上角时间标识 */
+.note-cover-ts-label {
+    display: none;
+}
+
+/* GIF 封面图自动播放（不使用缩略图） */
+.note-cover-image[data-is-gif="true"] {
+    /* GIF 自动播放，浏览器默认行为 */
 }
