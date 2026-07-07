@@ -254,3 +254,4 @@ VisualViewport API for mobile keyboard handling
 <img width="4096" height="3072" alt="IMG_20260706_163154" src="https://github.com/user-attachments/assets/c3a92d88-8d24-4a75-a2d0-92e13b10457a" />
 <img width="4096" height="3072" alt="IMG_20260706_163310" src="https://github.com/user-attachments/assets/348bfa5f-7234-47e2-a0cc-99da338ed771" />
 
+<img width="4096" height="3072" alt="IMG_20260707_133103" src="https://github.com/user-attachments/assets/053c8fc6-fc69-41d4-9f7b-9494e4a3b3c8" />
