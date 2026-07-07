@@ -721,8 +721,10 @@
                             },
                             style: { opacity: 0, transition: 'opacity 0.5s ease-in-out' }
                         }),
-                        h('div', { className: 'note-cover-overlay' }),
-                        plainText && h('div', { className: 'note-cover-text' }, plainText)
+                        plainText && h('div', { className: 'note-cover-overlay' },
+    h('div', { className: 'note-cover-text' }, plainText)
+),
+!plainText && h('div', { className: 'note-cover-overlay' })
                     )
                 )
             :
