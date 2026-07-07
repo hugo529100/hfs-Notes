@@ -1,4 +1,4 @@
-exports.version = 1.9
+exports.version = 2.0
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, and TXT export."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -80,6 +80,7 @@ exports.init = async api => {
     const MOV_BASE_DIR = path.join(storage, 'mov')
     const ATT_BASE_DIR = path.join(storage, 'att')
     const THUMB_BASE_DIR = path.join(storage, 'thumb')
+    const BACKUP_DIR = path.join(storage, 'backup')
 
     const MAX_NOTE_LEN = 2000
     const RETAIN_NOTES = 500
@@ -90,12 +91,13 @@ exports.init = async api => {
     const MAX_FILE_SIZE = 100 * 1024 * 1024
     const TEMP_IMG_TTL = 60 * 60 * 1000
     const THUMB_PIXELS = 800
-    const THUMB_QUALITY = 90
+    const THUMB_QUALITY = 85
     const THUMB_MIN_SIZE = 100 * 1024
 
     const dbs = new Map()
-    const backupTimers = {}
-    const exportTimers = {}
+    const dbObjects = new Map()
+    let backupTimer = null
+    let exportTimer = null
     let tempCleanupTimer = null
     
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
@@ -104,6 +106,7 @@ exports.init = async api => {
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(ATT_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
+    await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
     
     function isAllowed(username) {
         if (!username) return false
@@ -114,7 +117,8 @@ exports.init = async api => {
     
     function getDb(tab) {
         if (!dbs.has(tab)) {
-            dbs.set(tab, api.openDb(`notes_${tab}`, { rewriteLater: true }))
+            const db = api.openDb(`notes_${tab}`, { rewriteLater: true })
+            dbs.set(tab, db)
         }
         return dbs.get(tab)
     }
@@ -179,7 +183,6 @@ exports.init = async api => {
         return path.join(ATT_BASE_DIR, safeTab)
     }
 
-    // 统一的文件名映射 - mov和att共用逻辑
     function getNameMapPath(tab, type) {
         const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
         return path.join(dir, '.filenames')
@@ -262,7 +265,6 @@ exports.init = async api => {
         return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
     }
 
-    // 视频缩略图提取
     async function extractVideoThumbnail(videoPath, tab, fileId) {
         try {
             const ffmpegPath = api.getConfig('ffmpeg_path') || 'ffmpeg'
@@ -276,13 +278,11 @@ exports.init = async api => {
             }
             
             const thumbDir = await ensureDir(getTabThumbDir(tab))
-            // 缩略图使用与视频文件相同的 fileId，但扩展名改为 .jpg
             const ext = path.extname(fileId)
             const baseName = path.basename(fileId, ext)
             const thumbId = baseName + '.jpg'
             const thumbPath = path.join(thumbDir, thumbId)
             
-            // 检查缩略图是否已存在
             try {
                 await fs.stat(thumbPath)
                 return true
@@ -307,7 +307,6 @@ exports.init = async api => {
                     if (code === 0) {
                         resolve(true)
                     } else {
-                        // 清理失败的文件
                         fs.unlink(thumbPath).catch(() => {})
                         resolve(false)
                     }
@@ -323,7 +322,6 @@ exports.init = async api => {
         }
     }
 
-    // 删除视频缩略图
     async function deleteVideoThumbnail(tab, fileId) {
         try {
             const thumbDir = getTabThumbDir(tab)
@@ -370,15 +368,12 @@ exports.init = async api => {
         }
     }
 
-    // 检查缩略图是否存在（支持图片和视频）
     function hasThumbnail(tab, mediaId) {
         const thumbDir = getTabThumbDir(tab)
         
-        // 首先检查原始文件名（图片）
         let thumbPath = path.join(thumbDir, mediaId)
         if (fss.existsSync(thumbPath)) return true
         
-        // 检查视频对应的缩略图（用 .jpg 扩展名）
         const ext = path.extname(mediaId)
         if (['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv', '.flv'].includes(ext.toLowerCase())) {
             const baseName = path.basename(mediaId, ext)
@@ -389,7 +384,6 @@ exports.init = async api => {
         return false
     }
 
-    // 获取视频缩略图 URL 路径
     function getVideoThumbPath(tab, fileId) {
         const ext = path.extname(fileId)
         const baseName = path.basename(fileId, ext)
@@ -450,20 +444,25 @@ exports.init = async api => {
         const backupFiles = []
         
         for (const tab of tabs) {
-            const db = await getDb(tab)
-            const notes = await db.asObject()
+            const dbName = `notes_${tab}`
+            const sourcePath = path.join(storage, dbName + '.json')
             
-            const backupData = {
-                version: '1.0',
-                tab: tab,
-                timestamp: new Date().toISOString(),
-                notes: notes
+            try {
+                await fs.stat(sourcePath)
+            } catch {
+                continue
             }
             
             const timestamp = getTimestamp()
-            const backupFile = path.join(storage, `notes_backup_${tab}_${timestamp}.json`)
-            await fs.writeFile(backupFile, JSON.stringify(backupData, null, 2))
-            backupFiles.push(backupFile)
+            const backupFileName = `${dbName}_backup_${timestamp}.json`
+            const backupPath = path.join(BACKUP_DIR, backupFileName)
+            
+            try {
+                const data = await fs.readFile(sourcePath)
+                await fs.writeFile(backupPath, data)
+                backupFiles.push(backupPath)
+            } catch (e) {
+            }
         }
         
         return backupFiles
@@ -503,16 +502,17 @@ exports.init = async api => {
 
     async function cleanupOldBackups() {
         try {
-            const retentionDays = api.getConfig('backupRetentionDays') || 7
+            const retentionDays = api.getConfig('backupRetentionDays') || 3
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
-            const files = await fs.readdir(storage)
-            const backupFiles = files.filter(f => f.startsWith('notes_backup_') && f.endsWith('.json'))
+            
+            const files = await fs.readdir(BACKUP_DIR).catch(() => [])
+            const backupFiles = files.filter(f => f.includes('_backup_') && f.endsWith('.json'))
             
             for (const f of backupFiles) {
                 try {
-                    const stat = await fs.stat(path.join(storage, f))
+                    const stat = await fs.stat(path.join(BACKUP_DIR, f))
                     if (stat.mtime.getTime() < cutoffTime) {
-                        await fs.unlink(path.join(storage, f))
+                        await fs.unlink(path.join(BACKUP_DIR, f))
                     }
                 } catch {}
             }
@@ -520,22 +520,31 @@ exports.init = async api => {
     }
 
     function setupBackupTimer() {
-        const interval = api.getConfig('backupInterval') || 12
+        const interval = api.getConfig('backupInterval') || 6
         
-        if (backupTimers.main) clearInterval(backupTimers.main)
-        if (exportTimers.main) clearInterval(exportTimers.main)
-        if (tempCleanupTimer) clearInterval(tempCleanupTimer)
+        if (backupTimer) {
+            clearInterval(backupTimer)
+            backupTimer = null
+        }
+        if (exportTimer) {
+            clearInterval(exportTimer)
+            exportTimer = null
+        }
+        if (tempCleanupTimer) {
+            clearInterval(tempCleanupTimer)
+            tempCleanupTimer = null
+        }
         
         if (interval <= 0) return
         
         const intervalMs = interval * 60 * 60 * 1000
         
-        backupTimers.main = setInterval(async () => {
+        backupTimer = setInterval(async () => {
             await createBackup()
             await cleanupOldBackups()
         }, intervalMs)
         
-        exportTimers.main = setInterval(async () => {
+        exportTimer = setInterval(async () => {
             await exportTxtFiles()
         }, intervalMs)
         
@@ -663,7 +672,6 @@ exports.init = async api => {
         const notes = await db.asObject()
         const count = Object.keys(notes).length
         
-        // 返回缩略图是否存在的信息（包括图片和视频）
         const imageIds = new Set()
         const movIds = new Set()
         for (const note of Object.values(notes)) {
@@ -677,12 +685,10 @@ exports.init = async api => {
         for (const id of imageIds) {
             thumbMap[id] = hasThumbnail(tab, id)
         }
-        // 检查视频缩略图
         for (const id of movIds) {
             thumbMap[id] = hasThumbnail(tab, id)
         }
         
-        // 返回文件名映射（用于旧数据兼容）
         let fileNames = {}
         try {
             fileNames = JSON.parse(await fs.readFile(getNameMapPath(tab, 'mov'), 'utf-8'))
@@ -741,7 +747,6 @@ exports.init = async api => {
         const imageIds = extractImageIds(m)
         await promoteImages(tab, imageIds)
         
-        // 为新上传的视频提取缩略图
         const movIds = extractMovIds(m)
         if (movIds.length > 0) {
             const movDir = getTabMovDir(tab)
@@ -800,7 +805,6 @@ exports.init = async api => {
         const movDir = getTabMovDir(tab)
         for (const id of removedMovIds) {
             await fs.unlink(path.join(movDir, id)).catch(() => {})
-            // 同步删除视频缩略图
             await deleteVideoThumbnail(tab, id)
         }
         await cleanFileNameMapping(tab, 'mov', removedMovIds)
@@ -816,7 +820,6 @@ exports.init = async api => {
         
         await promoteImages(tab, newImgIds)
         
-        // 为新上传的视频提取缩略图
         for (const movId of newMovIds) {
             if (!oldMovIds.includes(movId)) {
                 const videoPath = path.join(movDir, movId)
@@ -908,7 +911,6 @@ exports.init = async api => {
             const movDir = getTabMovDir(tab)
             for (const id of movIds) {
                 await fs.unlink(path.join(movDir, id)).catch(() => {})
-                // 同步删除视频缩略图
                 await deleteVideoThumbnail(tab, id)
             }
             await cleanFileNameMapping(tab, 'mov', movIds)
@@ -973,15 +975,15 @@ exports.init = async api => {
         let backups = []
         let txtExports = []
         try {
-            const files = await fs.readdir(storage)
-            const backupFiles = files.filter(f => f.startsWith('notes_backup_') && f.endsWith('.json'))
+            const backupFiles = await fs.readdir(BACKUP_DIR).catch(() => [])
+            const jsonBackups = backupFiles.filter(f => f.includes('_backup_') && f.endsWith('.json'))
             backups = await Promise.all(
-                backupFiles.map(async f => {
-                    const stat = await fs.stat(path.join(storage, f))
+                jsonBackups.map(async f => {
+                    const stat = await fs.stat(path.join(BACKUP_DIR, f))
                     const nameWithoutExt = f.replace('.json', '')
-                    const parts = nameWithoutExt.replace('notes_backup_', '').split('_')
-                    const tabName = parts.length > 2 ? parts.slice(0, -2).join('_') : parts[0]
-                    const timestamp = parts.length > 2 ? parts.slice(-2).join('_') : nameWithoutExt
+                    const parts = nameWithoutExt.split('_backup_')
+                    const tabName = parts[0] ? parts[0].replace('notes_', '') : ''
+                    const timestamp = parts[1] || ''
                     
                     return { 
                         name: f, 
@@ -995,7 +997,8 @@ exports.init = async api => {
             )
             backups.sort((a, b) => b.created.localeCompare(a.created))
             
-            const txtFiles = files.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
+            const storageFiles = await fs.readdir(storage).catch(() => [])
+            const txtFiles = storageFiles.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
             txtExports = await Promise.all(
                 txtFiles.map(async f => {
                     const stat = await fs.stat(path.join(storage, f))
@@ -1255,7 +1258,6 @@ exports.init = async api => {
                 const movIds = extractMovIds(note.m)
                 for (const id of movIds) {
                     await fs.unlink(path.join(movDir, id)).catch(() => {})
-                    // 同步删除视频缩略图
                     await deleteVideoThumbnail(tab, id)
                 }
                 
@@ -1419,7 +1421,6 @@ exports.init = async api => {
                 await fs.writeFile(filePath, fileBuffer)
                 await saveFileName(tab, 'mov', fileId, originalName)
                 
-                // 如果是视频，异步提取缩略图
                 let hasVideoThumb = false
                 if (isVideo) {
                     hasVideoThumb = await extractVideoThumbnail(filePath, tab, fileId)
@@ -1507,7 +1508,6 @@ exports.init = async api => {
             ctx.body = await fs.readFile(thumbPath)
             ctx.status = 200
         } catch {
-            // 缩略图不存在，直接404，让前端使用原图
             ctx.status = 404
         }
     }

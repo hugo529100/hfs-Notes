@@ -108,7 +108,6 @@
         });
     }
 
-    // 获取视频缩略图路径
     function getVideoThumbPath(activeTab, fileId) {
         const ext = fileId.split('.').pop();
         const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
@@ -392,7 +391,6 @@
                         );
                     }
                     
-                    // 视频渲染 - 有缩略图时显示缩略图封面
                     if (videoThumbPath) {
                         return h('div', { 
                             key: `media-${i}`, 
@@ -417,7 +415,6 @@
                                         alt: displayName,
                                         className: 'note-mov-thumb-img',
                                         onError: function(e) {
-                                            // 缩略图加载失败，回退到占位符
                                             const wrapper = e.target.closest('.note-mov-wrapper');
                                             if (wrapper) {
                                                 wrapper.querySelector('.note-mov-thumb-cover').style.display = 'none';
@@ -478,7 +475,6 @@
                         );
                     }
                     
-                    // 无缩略图，使用原有占位符
                     return h('div', { 
                         key: `media-${i}`, 
                         className: 'note-inline-mov'
@@ -590,11 +586,10 @@
             onToggleCollapse(ts);
         };
 
+        // 封面点击不做任何动作，展开只能通过右上角的展开按钮
         const handleCoverClick = (e) => {
             e.stopPropagation();
-            if (isCollapsed) {
-                handleCollapseToggle(e);
-            }
+            // 无动作处理
         };
         
         if (editing) {
@@ -656,7 +651,6 @@
         const coverImageId = getCoverImage(m);
         const plainText = getPlainText(m);
         
-        // 封面图缩略图逻辑：GIF 不使用缩略图
         const coverExt = coverImageId ? coverImageId.split('.').pop()?.toLowerCase() : null;
         const coverIsGif = coverExt === 'gif';
         const coverHasThumb = coverImageId && !coverIsGif && thumbMap && thumbMap[coverImageId];
