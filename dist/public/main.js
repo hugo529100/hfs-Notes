@@ -1503,7 +1503,6 @@
             } catch (e) {}
         }, []);
 
-        // 获取全屏模式下的三列tab（保持tabs原始顺序）
         const getFullscreenColumns = useCallback(() => {
             if (!isFullscreen || isMobile) return [];
             
@@ -1522,7 +1521,6 @@
             return getFullscreenColumns();
         }, [getFullscreenColumns]);
 
-        // 全屏时加载可见列的笔记
         useEffect(() => {
             if (isFullscreen && !isMobile) {
                 fullscreenColumns.forEach(tab => {
@@ -1711,7 +1709,6 @@
             return starFilterActive ? notes.filter(n => n.starred) : notes;
         }, [notes, starFilterActive]);
 
-        // 全屏模式下当前活动tab的星标过滤
         const fullscreenActiveNotes = useMemo(() => {
             return fullscreenStarFilter ? notes.filter(n => n.starred) : notes;
         }, [notes, fullscreenStarFilter]);
@@ -1822,10 +1819,8 @@
         const handleTabClick = (tab) => {
             if (isFullscreen) {
                 if (tab === activeTab) {
-                    // 全屏模式下单击当前tab切换星标过滤
                     setFullscreenStarFilter(prev => !prev);
                 } else {
-                    // 切换到其他tab
                     setActiveTab(tab);
                     setFullscreenStarFilter(false);
                 }
@@ -1924,7 +1919,6 @@
                 )
             ),
             
-            // 全屏模式下的tab选择栏
             isFullscreen && h('div', { className: 'note-tabs-container note-tabs-fullscreen' },
                 h('div', { className: 'note-tabs' },
                     tabs.map((tab, i) =>
@@ -1940,7 +1934,6 @@
                 )
             ),
             
-            // 非全屏模式下的tab选择栏
             !isFullscreen && h('div', { className: 'note-tabs-container' },
                 h('div', { className: 'note-tabs' },
                     tabs.map((tab, i) =>
@@ -1992,7 +1985,6 @@
                 )
             ),
             
-            // 全屏模式：三列网格布局
             isFullscreen && !isMobile ? 
                 h('div', { className: 'note-fullscreen-grid', ref: fullscreenGridRef },
                     fullscreenColumns.map((tab, colIdx) => {
@@ -2030,7 +2022,6 @@
                     })
                 )
             :
-                // 非全屏模式：单列布局
                 h('div', { className: 'note-items', ref: listRef },
                     h('div', { 
                         ref: sentinelRef,
@@ -2067,7 +2058,6 @@
                         : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
                 ),
             
-            // 底部输入区域
             h('div', { className: `note-input-form ${isFullscreen ? 'note-input-fullscreen' : ''}` },
                 h('textarea', {
                     ref: inputRef,
@@ -2101,7 +2091,6 @@
     }
 
     function NoteApp() {
-        const { username } = HFS.useSnapState();
         const [show, setShow] = useState(false);
         const [hasAccess, setHasAccess] = useState(false);
 
@@ -2121,33 +2110,17 @@
         }, h(NotePanel, { onClose: () => setShow(false) }));
     }
 
-    if (HFS.state.username) {
-        HFS.onEvent('appendMenuBar', () => {
-            return h('button', {
-                className: 'menu-bar-notes-btn',
-                onClick() { window.dispatchEvent(new CustomEvent('toggle-notes')) },
-                title: 'Open Notes'
-            }, [
-                h('span', { 'aria-hidden': 'true' }, '✐'),
-                h('span', { className: 'btn-label' }, 'Notes')
-            ]);
-        });
-    } else {
-        checkAccess().then(allowed => {
-            if (allowed || publicTabsList.length > 0) {
-                HFS.onEvent('appendMenuBar', () => {
-                    return h('button', {
-                        className: 'menu-bar-notes-btn',
-                        onClick() { window.dispatchEvent(new CustomEvent('toggle-notes')) },
-                        title: 'Open Notes'
-                    }, [
-                        h('span', { 'aria-hidden': 'true' }, '✐'),
-                        h('span', { className: 'btn-label' }, 'Notes')
-                    ]);
-                });
-            }
-        });
-    }
+    // 常驻菜单栏 Notes 按钮，不管是否登录都显示
+    HFS.onEvent('appendMenuBar', () => {
+        return h('button', {
+            className: 'menu-bar-notes-btn',
+            onClick() { window.dispatchEvent(new CustomEvent('toggle-notes')) },
+            title: 'Open Notes'
+        }, [
+            h('span', { 'aria-hidden': 'true' }, '✐'),
+            h('span', { className: 'btn-label' }, 'Notes')
+        ]);
+    });
 
     HFS.onEvent('footer', () => h(NoteApp));
 }
