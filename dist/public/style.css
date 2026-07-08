@@ -1217,7 +1217,7 @@
 /* 遮罩层 - 包裹文字，高度由文字撑开 */
 .note-cover-overlay {
     position: absolute;
-    bottom: 36px;
+    bottom: 35px;
     left: 0;
     right: 0;
     background: var(--bg);
