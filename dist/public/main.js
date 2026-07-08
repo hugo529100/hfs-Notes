@@ -1,10 +1,24 @@
 "use strict"; {
     const MAX_NOTE_LEN = 2000;
+    const PAGE_SIZE = 10;
     const { h } = HFS;
     const { useState, useEffect, useRef, useMemo, useCallback } = HFS.React;
 
     const CACHE_ACTIVE_TAB = 'notes_activeTab';
     const CACHE_INPUT_TEXT = 'notes_inputText';
+
+    let isGuest = false;
+    let publicTabsList = [];
+
+    async function checkAccess() {
+        try {
+            const res = await fetch('/~/api/notes/check');
+            const data = await res.json();
+            isGuest = data.isGuest || false;
+            publicTabsList = data.publicTabs || [];
+            return data.allowed;
+        } catch { return false; }
+    }
 
     async function uploadImage(file, tab) {
         return new Promise((resolve, reject) => {
@@ -118,7 +132,7 @@
         return null;
     }
 
-    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames }) {
+    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn }) {
         const { u, m, ts, starred, collapsed } = note;
         const { username } = HFS.useSnapState();
         const [editing, setEditing] = useState(false);
@@ -128,9 +142,17 @@
         const noteItemRef = useRef(null);
         const videoRef = useRef(null);
         const [videoPlaying, setVideoPlaying] = useState(false);
+        const [localCollapsed, setLocalCollapsed] = useState(null);
+        
+        const isAdminUser = username === 'admin';
+        const isOwner = username && (isAdminUser || username === u);
+        const currentGuest = isGuest;
+        
+        const effectiveCollapsed = isFullscreenColumn ? true : (localCollapsed !== null ? localCollapsed : (collapsed || false));
         
         useEffect(() => {
             setEditing(false);
+            setLocalCollapsed(null);
         }, [activeTab]);
         
         useEffect(() => {
@@ -141,7 +163,8 @@
         }, [editVal, editing]);
         
         const handleDblClick = () => {
-            if (username === u) {
+            if (isFullscreenColumn) return;
+            if (isOwner && !currentGuest) {
                 setEditing(true);
                 setEditVal(m);
                 setTimeout(() => {
@@ -149,6 +172,9 @@
                     if (textareaRef.current) {
                         textareaRef.current.style.height = 'auto';
                         textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+                        requestAnimationFrame(() => {
+                            textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        });
                     }
                 }, 50);
             }
@@ -184,6 +210,7 @@
         };
 
         const handleEditUpload = async () => {
+            if (currentGuest) { HFS.toast('Please login to upload files', 'info'); return; }
             try {
                 const files = await createFilePicker('*');
                 HFS.toast(`Uploading ${files.length} file(s)...`, 'info');
@@ -335,12 +362,10 @@
                                 img.src = img.dataset.fullSrc;
                                 img.dataset.isThumb = 'false';
                                 img.title = 'Click to show thumbnail';
-                                HFS.toast('Showing full image - click again for thumbnail', 'info');
                             } else {
                                 img.src = img.dataset.thumbSrc;
                                 img.dataset.isThumb = 'true';
                                 img.title = 'Click to view full image';
-                                HFS.toast('Showing thumbnail', 'info');
                             }
                         },
                         onLoad: function(e) {
@@ -363,7 +388,7 @@
                     const ext = part.fileId.split('.').pop()?.toLowerCase();
                     const audioExts = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg', 'oga'];
                     const isAudio = audioExts.includes(ext);
-                    const displayName = part.name || part.fileId;
+                    const displayName = part.name || attNames[part.fileId] || part.fileId;
                     const hasThumb = thumbMap && thumbMap[part.fileId];
                     const videoThumbPath = hasThumb ? getVideoThumbPath(activeTab, part.fileId) : null;
                     
@@ -417,7 +442,8 @@
                                         onError: function(e) {
                                             const wrapper = e.target.closest('.note-mov-wrapper');
                                             if (wrapper) {
-                                                wrapper.querySelector('.note-mov-thumb-cover').style.display = 'none';
+                                                const thumbCover = wrapper.querySelector('.note-mov-thumb-cover');
+                                                if (thumbCover) thumbCover.style.display = 'none';
                                                 const placeholder = wrapper.querySelector('.note-mov-placeholder');
                                                 if (placeholder) placeholder.style.display = 'flex';
                                             }
@@ -565,6 +591,10 @@
 
         const handleCollapseToggle = (e) => {
             e.stopPropagation();
+            if (currentGuest || isFullscreenColumn) {
+                setLocalCollapsed(prev => prev === null ? !effectiveCollapsed : !prev);
+                return;
+            }
             const noteEl = noteItemRef.current;
             if (noteEl) {
                 const scrollContainer = noteEl.closest('.note-items');
@@ -586,10 +616,19 @@
             onToggleCollapse(ts);
         };
 
-        // 封面点击不做任何动作，展开只能通过右上角的展开按钮
         const handleCoverClick = (e) => {
             e.stopPropagation();
-            // 无动作处理
+        };
+        
+        const handleDeleteClick = () => {
+            if (currentGuest) { HFS.toast('Please login to manage notes', 'info'); return; }
+            onDelete(ts);
+        };
+
+        const handleStarClick = (e) => {
+            e.stopPropagation();
+            if (currentGuest) { HFS.toast('Please login to use this feature', 'info'); return; }
+            onToggleStar(ts);
         };
         
         if (editing) {
@@ -602,14 +641,14 @@
                 h('div', { className: 'note-header-row' },
                     h('div', { className: 'note-meta' },
                         h('span', { className: 'note-ts' }, new Date(ts).toLocaleString()),
-                        h('span', { className: 'note-author' }, ' - ' + (u || 'anon'))
+                        h('span', { className: 'note-author' }, ' - ' + (u || 'Guest'))
                     ),
                     h('div', { className: 'note-edit-actions' },
                         h('span', { 
                             className: 'note-edit-charcount',
                             style: { color: editVal.length >= MAX_NOTE_LEN * 0.9 ? '#fe5757' : undefined }
                         }, `${editVal.length}/${MAX_NOTE_LEN}`),
-                        h('button', { 
+                        !currentGuest && h('button', { 
                             className: 'note-img-upload-btn', 
                             onClick: handleEditUpload,
                             title: 'Upload files (multi-select supported)'
@@ -644,10 +683,10 @@
             );
         }
         
-        const isCollapsed = searchTerm ? false : (collapsed || false);
+        const isCollapsed = searchTerm ? false : effectiveCollapsed;
         const noteLength = m ? m.length : 0;
         const lineCount = m ? m.split('\n').length : 0;
-        const showFooter = !isCollapsed && lineCount > 10;
+        const showFooter = !isFullscreenColumn && !isCollapsed && lineCount > 10;
         const coverImageId = getCoverImage(m);
         const plainText = getPlainText(m);
         
@@ -658,8 +697,10 @@
             ? `/~/notes/thumb/${activeTab}/${coverImageId}`
             : (coverImageId ? `/~/notes/img/${activeTab}/${coverImageId}` : '');
         
+        const canManage = isAdminUser || isOwner;
+        
         return h('div', { 
-            className: `note-item ${starred ? 'note-item-starred' : ''} ${isCollapsed && coverImageId ? 'note-item-has-cover' : ''}`, 
+            className: `note-item ${starred ? 'note-item-starred' : ''} ${isCollapsed && coverImageId ? 'note-item-has-cover' : ''} ${isFullscreenColumn ? 'note-item-compact' : ''}`, 
             onDblClick: handleDblClick,
             ref: noteItemRef,
             'data-note-ts': ts,
@@ -668,22 +709,22 @@
             h('div', { className: 'note-header-row' },
                 h('div', { className: 'note-meta' },
                     h('span', { className: 'note-ts' }, new Date(ts).toLocaleString()),
-                    h('span', { className: 'note-author' }, ' - ' + (u || 'anon')),
-                    h('button', {
+                    h('span', { className: 'note-author' }, ' - ' + (u || 'Guest')),
+                    !currentGuest && h('button', {
                         className: `note-star-btn-inline ${starred ? 'note-starred' : ''}`,
-                        onClick: (e) => { e.stopPropagation(); onToggleStar(ts); },
+                        onClick: handleStarClick,
                         title: starred ? 'Unstar' : 'Star'
                     }, '★')
                 ),
                 h('div', { className: 'note-header-actions' },
-                    h('button', {
+                    !isFullscreenColumn && h('button', {
                         className: 'note-collapse-btn',
                         onClick: handleCollapseToggle,
                         title: isCollapsed ? 'Expand note' : 'Collapse note'
                     }, isCollapsed ? '▶' : '▼'),
-                    username === u && h('button', {
+                    canManage && h('button', {
                         className: 'note-delete-btn',
-                        onClick: () => onDelete(ts),
+                        onClick: handleDeleteClick,
                         title: 'Delete note'
                     }, '×')
                 )
@@ -716,9 +757,9 @@
                             style: { opacity: 0, transition: 'opacity 0.5s ease-in-out' }
                         }),
                         plainText && h('div', { className: 'note-cover-overlay' },
-    h('div', { className: 'note-cover-text' }, plainText)
-),
-!plainText && h('div', { className: 'note-cover-overlay' })
+                            h('div', { className: 'note-cover-text' }, plainText)
+                        ),
+                        !plainText && h('div', { className: 'note-cover-overlay' })
                     )
                 )
             :
@@ -737,9 +778,9 @@
                         onClick: handleCollapseToggle,
                         title: 'Collapse note'
                     }, '▲'),
-                    username === u && h('button', {
+                    canManage && h('button', {
                         className: 'note-footer-delete-btn',
-                        onClick: () => onDelete(ts),
+                        onClick: handleDeleteClick,
                         title: 'Delete note'
                     }, '×')
                 )
@@ -778,9 +819,25 @@
         const [renameValue, setRenameValue] = useState('');
         const renameInputRef = useRef(null);
         const [starFilterActive, setStarFilterActive] = useState(false);
+        const [fullscreenStarFilter, setFullscreenStarFilter] = useState(false);
         const [isDragging, setIsDragging] = useState(false);
         const [thumbMap, setThumbMap] = useState({});
         const [attNames, setAttNames] = useState({});
+        const [hasMore, setHasMore] = useState(false);
+        const [loadingMore, setLoadingMore] = useState(false);
+        const [currentOffset, setCurrentOffset] = useState(0);
+        const [showSortButtons, setShowSortButtons] = useState(false);
+        const [isFullscreen, setIsFullscreen] = useState(false);
+        const [otherTabData, setOtherTabData] = useState({});
+        const renameSavePendingRef = useRef(false);
+        const isLoadingMoreRef = useRef(false);
+        const hasMoreRef = useRef(false);
+        const scrollRestoreRef = useRef(0);
+        const sentinelRef = useRef(null);
+        const observerRef = useRef(null);
+        const fullscreenChangeHandlerRef = useRef(null);
+        const isFullscreenRef = useRef(false);
+        const fullscreenGridRef = useRef(null);
         
         const inputRef = useRef(null);
         const listRef = useRef(null);
@@ -795,8 +852,14 @@
         const shouldAutoScrollRef = useRef(true);
         const dragCounterRef = useRef(0);
         const panelRef = useRef(null);
+        const currentOffsetRef = useRef(0);
         
         useEffect(() => { mRef.current = m; }, [m]);
+        useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+        useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
+        useEffect(() => { isLoadingMoreRef.current = loadingMore; }, [loadingMore]);
+        useEffect(() => { currentOffsetRef.current = currentOffset; }, [currentOffset]);
+        useEffect(() => { isFullscreenRef.current = isFullscreen; }, [isFullscreen]);
 
         useEffect(() => {
             try {
@@ -811,9 +874,11 @@
                 }
             } catch {}
             setStarFilterActive(false);
+            setFullscreenStarFilter(false);
+            setHasMore(false);
+            setCurrentOffset(0);
+            shouldAutoScrollRef.current = true;
         }, [activeTab]);
-        
-        useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
         
         useEffect(() => {
             if (renamingTab && renameInputRef.current) {
@@ -833,10 +898,23 @@
         }, []);
 
         useEffect(() => {
+            return () => {
+                if (fullscreenChangeHandlerRef.current) {
+                    document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
+                    fullscreenChangeHandlerRef.current = null;
+                }
+                if (document.fullscreenElement) {
+                    document.exitFullscreen?.().catch(() => {});
+                }
+            };
+        }, []);
+
+        useEffect(() => {
             const btn = sendBtnRef.current;
             if (!btn) return;
             
             const handlePointerDown = () => {
+                if (isGuest) { HFS.toast('Please login to upload files', 'info'); return; }
                 longPressTimerRef.current = setTimeout(async () => {
                     try {
                         const files = await createFilePicker('*');
@@ -916,6 +994,7 @@
             const handleDragEnter = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (isGuest) return;
                 dragCounterRef.current++;
                 if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
                     setIsDragging(true);
@@ -942,6 +1021,7 @@
                 e.stopPropagation();
                 setIsDragging(false);
                 dragCounterRef.current = 0;
+                if (isGuest) { HFS.toast('Please login to upload files', 'info'); return; }
 
                 const files = Array.from(e.dataTransfer.files);
                 if (files.length === 0) {
@@ -1082,9 +1162,58 @@
         }, [tabNames]);
 
         const handleClose = () => {
+            if (observerRef.current) {
+                observerRef.current.disconnect();
+                observerRef.current = null;
+            }
+            if (fullscreenChangeHandlerRef.current) {
+                document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
+                fullscreenChangeHandlerRef.current = null;
+            }
+            if (document.fullscreenElement) {
+                document.exitFullscreen?.().catch(() => {});
+            }
             setClosing(true);
             setTimeout(onClose, 300);
         };
+
+        const toggleFullscreen = useCallback(() => {
+            const el = document.documentElement;
+            
+            if (!isFullscreenRef.current) {
+                el.requestFullscreen?.()
+                    .then(() => {
+                        setIsFullscreen(true);
+                        setFullscreenStarFilter(false);
+                        
+                        if (fullscreenChangeHandlerRef.current) {
+                            document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
+                        }
+                        
+                        fullscreenChangeHandlerRef.current = () => {
+                            if (!document.fullscreenElement) {
+                                el.requestFullscreen?.().catch(() => {
+                                    setIsFullscreen(false);
+                                });
+                            }
+                        };
+                        
+                        document.addEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
+                    })
+                    .catch(err => {
+                        HFS.toast("Enter fullscreen failed: " + err, 'error');
+                    });
+            } else {
+                if (fullscreenChangeHandlerRef.current) {
+                    document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
+                    fullscreenChangeHandlerRef.current = null;
+                }
+                
+                document.exitFullscreen?.();
+                setIsFullscreen(false);
+                setFullscreenStarFilter(false);
+            }
+        }, []);
 
         const tabUsagePercent = useMemo(() => {
             if (!activeTab || !tabCounts[activeTab]) return 0;
@@ -1095,9 +1224,23 @@
             return (tabCounts[activeTab] || 0) >= 500;
         }, [activeTab, tabCounts]);
 
+        const sanitizeText = useCallback((text) => {
+            if (!text) return '';
+            return text
+                .replace(/\x00/g, '')
+                .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+                .replace(/\u200B/g, '')
+                .replace(/[\u200C\u200D]/g, '')
+                .replace(/\uFEFF/g, '')
+                .replace(/[\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F]/g, '')
+                .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
+                .normalize('NFC');
+        }, []);
+
         const sendChunks = useCallback(async (text, tab) => {
+            const sanitized = sanitizeText(text);
             const chunks = [];
-            let remaining = text;
+            let remaining = sanitized;
             while (remaining.length > 0) {
                 chunks.push(remaining.slice(0, MAX_NOTE_LEN));
                 remaining = remaining.slice(MAX_NOTE_LEN);
@@ -1118,7 +1261,7 @@
                     await new Promise(r => setTimeout(r, 250));
                 }
             }
-        }, []);
+        }, [sanitizeText]);
 
         const handleSubmit = useCallback(() => {
             if (isOverLimit) {
@@ -1133,14 +1276,17 @@
             
             const doSend = async () => {
                 try {
-                    if (trim.length > MAX_NOTE_LEN) {
-                        await sendChunks(trim, currentTab);
-                        HFS.toast(`Content split into ${Math.ceil(trim.length / MAX_NOTE_LEN)} notes (auto-collapsed)`, 'info');
+                    const sanitizedM = sanitizeText(trim);
+                    if (!sanitizedM) return;
+                    
+                    if (sanitizedM.length > MAX_NOTE_LEN) {
+                        await sendChunks(sanitizedM, currentTab);
+                        HFS.toast(`Content split into ${Math.ceil(sanitizedM.length / MAX_NOTE_LEN)} notes (auto-collapsed)`, 'info');
                     } else {
                         const res = await fetch('/~/api/notes/add', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ m: trim, tab: currentTab })
+                            body: JSON.stringify({ m: sanitizedM, tab: currentTab })
                         });
                         if (!res.ok) {
                             if (res.status === 429) HFS.toast('Please wait before adding another note', 'error');
@@ -1160,15 +1306,18 @@
                 } catch (e) {}
             };
             doSend();
-        }, [sendChunks, isOverLimit]);
+        }, [sendChunks, isOverLimit, sanitizeText]);
 
         const handleEdit = useCallback((ts, newText) => {
             const doEdit = async () => {
                 try {
-                    if (newText.length > MAX_NOTE_LEN) {
-                        const firstChunk = newText.slice(0, MAX_NOTE_LEN);
+                    const sanitizedText = sanitizeText(newText);
+                    if (!sanitizedText) return;
+                    
+                    if (sanitizedText.length > MAX_NOTE_LEN) {
+                        const firstChunk = sanitizedText.slice(0, MAX_NOTE_LEN);
                         const restChunks = [];
-                        let remaining = newText.slice(MAX_NOTE_LEN);
+                        let remaining = sanitizedText.slice(MAX_NOTE_LEN);
                         while (remaining.length > 0) {
                             restChunks.push(remaining.slice(0, MAX_NOTE_LEN));
                             remaining = remaining.slice(MAX_NOTE_LEN);
@@ -1196,7 +1345,7 @@
                         const res = await fetch('/~/api/notes/update', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ ts, tab: activeTab, m: newText })
+                            body: JSON.stringify({ ts, tab: activeTab, m: sanitizedText })
                         });
                         if (!res.ok) {
                             HFS.toast('Failed to update note', 'error');
@@ -1205,7 +1354,7 @@
                 } catch (e) {}
             };
             doEdit();
-        }, [activeTab]);
+        }, [activeTab, sanitizeText]);
 
         const handleToggleStar = useCallback((ts) => {
             fetch('/~/api/notes/toggle-star', {
@@ -1225,25 +1374,31 @@
         }, [activeTab]);
 
         const handleRenameStart = (tab) => {
+            if (isGuest) return;
             setRenamingTab(tab);
             setRenameValue(tabNames[tab] || '');
+            setShowSortButtons(true);
         };
 
         const handleRenameSave = async () => {
             if (!renamingTab) return;
             const newName = renameValue.trim();
-            try {
-                await fetch('/~/api/notes/rename-tab', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tab: renamingTab, newName: newName })
-                });
-            } catch (e) {}
+            if (newName && newName !== renamingTab) {
+                try {
+                    await fetch('/~/api/notes/rename-tab', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tab: renamingTab, newName: newName })
+                    });
+                } catch (e) {}
+            }
             setRenamingTab(null);
+            setShowSortButtons(false);
         };
 
         const handleRenameCancel = () => {
             setRenamingTab(null);
+            setShowSortButtons(false);
         };
 
         const handleRenameKeyDown = (e) => {
@@ -1255,13 +1410,24 @@
             }
         };
 
+        const handleSortBtnMouseDown = (e) => {
+            e.preventDefault();
+        };
+
         useEffect(() => {
-            const originalOverflow = document.body.style.overflow;
-            document.body.style.overflow = 'hidden';
-            return () => {
-                document.body.style.overflow = originalOverflow;
-            };
-        }, []);
+            if (!isFullscreen) {
+                const originalOverflow = document.body.style.overflow;
+                document.body.style.overflow = 'hidden';
+                return () => {
+                    document.body.style.overflow = originalOverflow;
+                };
+            } else {
+                document.body.style.overflow = '';
+                return () => {
+                    document.body.style.overflow = '';
+                };
+            }
+        }, [isFullscreen]);
 
         const loadTabs = useCallback(() => {
             fetch('/~/api/notes/tabs')
@@ -1280,9 +1446,155 @@
                     if (data.tabs?.length > 0 && !data.tabs.includes(activeTabRef.current)) {
                         setActiveTab(prev => data.tabs.includes(prev) ? prev : data.tabs[0]);
                     }
+                    if (data.isGuest !== undefined) {
+                        isGuest = data.isGuest;
+                    }
                 })
                 .catch(e => {});
         }, []);
+
+        const loadNotes = useCallback(async (tab, append = false) => {
+            if (!tab) return;
+            let offset = 0;
+            if (append) {
+                offset = currentOffsetRef.current;
+            }
+            const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}`);
+            const data = await res.json();
+            
+            const rawNotes = data.notes || {};
+            const sortedKeys = Object.keys(rawNotes).sort();
+            const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
+            
+            if (append) {
+                setNotes(prev => {
+                    const existingTs = new Set(prev.map(n => n.ts));
+                    const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
+                    return [...newNotes, ...prev];
+                });
+            } else {
+                setNotes(notesWithTab);
+            }
+            const newHasMore = data.hasMore || false;
+            setHasMore(newHasMore);
+            setCurrentOffset(offset + PAGE_SIZE);
+            setThumbMap(data.thumbMap || {});
+            setAttNames(data.fileNames || {});
+            return newHasMore;
+        }, []);
+
+        const loadOtherTabNotes = useCallback(async (tab) => {
+            if (!tab) return;
+            try {
+                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=0&limit=30`);
+                const data = await res.json();
+                const rawNotes = data.notes || {};
+                const sortedKeys = Object.keys(rawNotes).sort();
+                const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
+                
+                setOtherTabData(prev => ({
+                    ...prev,
+                    [tab]: {
+                        notes: notesWithTab,
+                        thumbMap: data.thumbMap || {},
+                        fileNames: data.fileNames || {}
+                    }
+                }));
+            } catch (e) {}
+        }, []);
+
+        // 获取全屏模式下的三列tab（保持tabs原始顺序）
+        const getFullscreenColumns = useCallback(() => {
+            if (!isFullscreen || isMobile) return [];
+            
+            const activeIdx = tabs.indexOf(activeTab);
+            if (activeIdx === -1) return tabs.slice(0, 3);
+            
+            const result = [];
+            for (let i = 0; i < 3; i++) {
+                const idx = (activeIdx + i) % tabs.length;
+                result.push(tabs[idx]);
+            }
+            return result;
+        }, [isFullscreen, isMobile, tabs, activeTab]);
+
+        const fullscreenColumns = useMemo(() => {
+            return getFullscreenColumns();
+        }, [getFullscreenColumns]);
+
+        // 全屏时加载可见列的笔记
+        useEffect(() => {
+            if (isFullscreen && !isMobile) {
+                fullscreenColumns.forEach(tab => {
+                    if (tab !== activeTab) {
+                        loadOtherTabNotes(tab);
+                    }
+                });
+            }
+        }, [isFullscreen, fullscreenColumns, activeTab, isMobile, loadOtherTabNotes]);
+
+        const doLoadMore = useCallback(() => {
+            if (isLoadingMoreRef.current || !hasMoreRef.current || searchTerm) return;
+            
+            shouldAutoScrollRef.current = false;
+            
+            const el = listRef.current;
+            isLoadingMoreRef.current = true;
+            setLoadingMore(true);
+            if (el) {
+                scrollRestoreRef.current = el.scrollHeight;
+            }
+            
+            loadNotes(activeTabRef.current, true).finally(() => {
+                setLoadingMore(false);
+                isLoadingMoreRef.current = false;
+                
+                requestAnimationFrame(() => {
+                    if (listRef.current) {
+                        const newScrollHeight = listRef.current.scrollHeight;
+                        const heightDiff = newScrollHeight - scrollRestoreRef.current;
+                        listRef.current.scrollTop = heightDiff;
+                        
+                        if (hasMoreRef.current && listRef.current.scrollHeight <= listRef.current.clientHeight + 200) {
+                            setTimeout(() => doLoadMore(), 300);
+                        }
+                    }
+                });
+            });
+        }, [searchTerm, loadNotes]);
+
+        const setupSentinelObserver = useCallback(() => {
+            if (observerRef.current) {
+                observerRef.current.disconnect();
+                observerRef.current = null;
+            }
+            
+            const el = listRef.current;
+            const sentinel = sentinelRef.current;
+            if (!el || !sentinel || !hasMore || searchTerm) return;
+            
+            observerRef.current = new IntersectionObserver((entries) => {
+                if (entries[0].isIntersecting && hasMoreRef.current && !isLoadingMoreRef.current && !searchTerm) {
+                    doLoadMore();
+                }
+            }, { 
+                root: el,
+                rootMargin: '300px 0px 0px 0px',
+                threshold: 0
+            });
+            
+            observerRef.current.observe(sentinel);
+        }, [hasMore, searchTerm, doLoadMore]);
+
+        useEffect(() => {
+            setupSentinelObserver();
+            return () => {
+                if (observerRef.current) {
+                    observerRef.current.disconnect();
+                    observerRef.current = null;
+                }
+            };
+        }, [setupSentinelObserver]);
 
         useEffect(() => {
             loadTabs();
@@ -1291,21 +1603,35 @@
                 if (esRef.current) {
                     esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
                 }
+                if (observerRef.current) {
+                    observerRef.current.disconnect();
+                    observerRef.current = null;
+                }
             };
         }, []);
 
         useEffect(() => {
             if (!activeTab) return;
             
-            fetch(`/~/api/notes/list?tab=${encodeURIComponent(activeTab)}`)
-                .then(r => r.json())
-                .then(data => {
-                    const notesWithTab = HFS._.map(data.notes || {}, (o, ts) => ({ ...o, ts, _tab: activeTab }));
-                    setNotes(notesWithTab);
-                    setThumbMap(data.thumbMap || {});
-                    setAttNames(data.attNames || {});
-                })
-                .catch(e => {});
+            setCurrentOffset(0);
+            setHasMore(false);
+            shouldAutoScrollRef.current = true;
+            
+            if (observerRef.current) {
+                observerRef.current.disconnect();
+                observerRef.current = null;
+            }
+            
+            loadNotes(activeTab, false).then((hasMoreData) => {
+                if (hasMoreData && !searchTerm) {
+                    requestAnimationFrame(() => {
+                        const el = listRef.current;
+                        if (el && el.scrollHeight <= el.clientHeight + 100) {
+                            doLoadMore();
+                        }
+                    });
+                }
+            });
 
             if (esRef.current) {
                 esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
@@ -1343,7 +1669,11 @@
                     
                     if (e === 'newNote') {
                         shouldAutoScrollRef.current = true;
-                        setNotes(prev => [...prev, { ...data, _tab: activeTab }]);
+                        setNotes(prev => {
+                            const exists = prev.some(n => n.ts === data.ts);
+                            if (exists) return prev;
+                            return [...prev, { ...data, _tab: activeTab }];
+                        });
                         loadTabs();
                     } else if (e === 'updateNote') {
                         setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, m: data.m, collapsed: data.collapsed } : n));
@@ -1356,28 +1686,35 @@
                         loadTabs();
                     } else if (e === 'tabCleared' && data.tab === activeTab) {
                         setNotes([]);
+                        setHasMore(false);
+                        setCurrentOffset(0);
                         loadTabs();
                     }
                 });
             } catch (e) {}
-
-            setTimeout(() => {
-                if (listRef.current && shouldAutoScrollRef.current) {
-                    listRef.current.scrollTop = listRef.current.scrollHeight;
-                }
-            }, 100);
         }, [activeTab]);
 
         useEffect(() => {
-            if (listRef.current && shouldAutoScrollRef.current) {
-                listRef.current.scrollTop = listRef.current.scrollHeight;
-            }
+            if (!listRef.current) return;
+            if (!shouldAutoScrollRef.current) return;
+            
+            requestAnimationFrame(() => {
+                if (listRef.current) {
+                    listRef.current.scrollTop = listRef.current.scrollHeight;
+                }
+            });
+            
             shouldAutoScrollRef.current = true;
         }, [notes]);
 
         const displayNotes = useMemo(() => {
             return starFilterActive ? notes.filter(n => n.starred) : notes;
         }, [notes, starFilterActive]);
+
+        // 全屏模式下当前活动tab的星标过滤
+        const fullscreenActiveNotes = useMemo(() => {
+            return fullscreenStarFilter ? notes.filter(n => n.starred) : notes;
+        }, [notes, fullscreenStarFilter]);
 
         const { filteredNotes, totalMatches, noteMatchMap } = useMemo(() => {
             if (!searchTerm) return { filteredNotes: displayNotes, totalMatches: 0, noteMatchMap: new Map() };
@@ -1456,6 +1793,7 @@
         };
 
         const moveTab = (tab, direction) => {
+            if (isGuest) { HFS.toast('Please login to manage tabs', 'info'); return; }
             const idx = tabs.indexOf(tab);
             if (idx === -1) return;
             
@@ -1482,6 +1820,17 @@
         };
 
         const handleTabClick = (tab) => {
+            if (isFullscreen) {
+                if (tab === activeTab) {
+                    // 全屏模式下单击当前tab切换星标过滤
+                    setFullscreenStarFilter(prev => !prev);
+                } else {
+                    // 切换到其他tab
+                    setActiveTab(tab);
+                    setFullscreenStarFilter(false);
+                }
+                return;
+            }
             if (tab === activeTab) {
                 setStarFilterActive(prev => !prev);
             } else {
@@ -1489,19 +1838,28 @@
             }
         };
 
+        const dragOverlayContent = isGuest ? 'Please login to upload files' : '📎 Drop files to upload (multi-file supported)';
+
         return h('div', { 
-            className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''}`,
+            className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
             style: { fontSize: fontSize + 'px' },
             ref: panelRef
         },
             isDragging && h('div', { className: 'note-drag-overlay' },
-                h('div', { className: 'note-drag-overlay-content' }, '📎 Drop files to upload (multi-file supported)')
+                h('div', { className: 'note-drag-overlay-content' }, dragOverlayContent)
             ),
             h('div', { className: 'note-panel-header', ref: headerRef },
                 h('div', { className: 'note-header-left' },
-                    h('span', { className: 'note-panel-title' }, '✐ Notes'),
-                    starFilterActive && h('span', { className: 'note-star-filter-indicator' }, '★'),
-                    h('div', { className: 'note-font-btns-header' },
+                    h('span', { 
+                        className: 'note-panel-title',
+                        onClick: toggleFullscreen,
+                        style: { cursor: 'pointer' },
+                        title: isFullscreen ? 'Click to exit fullscreen' : 'Click to enter fullscreen'
+                    }, isGuest ? '✐ Notes (Guest)' : '✐ Notes'),
+                    isFullscreen && h('span', { className: 'note-fullscreen-indicator' }, ' ⊞'),
+                    starFilterActive && !isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '★'),
+                    fullscreenStarFilter && isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '★'),
+                    !isGuest && h('div', { className: 'note-font-btns-header' },
                         h('button', {
                             className: 'note-font-btn-header',
                             onClick: increaseFont,
@@ -1516,7 +1874,7 @@
                     storageWarning && h('span', { className: 'note-warn-icon', title: 'Storage limit approaching' }, '⚠')
                 ),
                 h('div', { className: 'note-header-right' },
-                    h('button', {
+                    !isFullscreen && h('button', {
                         className: 'note-search-toggle',
                         onClick: () => {
                             setShowSearch(!showSearch);
@@ -1528,7 +1886,7 @@
                     searchTerm && h('span', { className: 'note-header-stats' },
                         `${filteredNotes.length} notes / ${totalMatches} matches`
                     ),
-                    h('span', {
+                    !isFullscreen && h('span', {
                         className: 'note-header-charcount',
                         style: { color: m.length >= MAX_NOTE_LEN * 0.9 ? '#fe5757' : undefined }
                     }, `${m.length}/${MAX_NOTE_LEN}`),
@@ -1540,7 +1898,7 @@
                 )
             ),
             
-            showSearch && h('div', { className: 'note-search-bar' },
+            showSearch && !isFullscreen && h('div', { className: 'note-search-bar' },
                 h('input', {
                     ref: searchInputRef,
                     value: searchTerm,
@@ -1566,7 +1924,24 @@
                 )
             ),
             
-            h('div', { className: 'note-tabs-container' },
+            // 全屏模式下的tab选择栏
+            isFullscreen && h('div', { className: 'note-tabs-container note-tabs-fullscreen' },
+                h('div', { className: 'note-tabs' },
+                    tabs.map((tab, i) =>
+                        h('span', { key: tab, className: 'note-tab-wrapper' },
+                            i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
+                            h('button', {
+                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${fullscreenStarFilter && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+                                onClick: () => handleTabClick(tab),
+                                title: activeTab === tab ? (fullscreenStarFilter ? 'Click to exit star filter' : 'Click to filter starred') : 'Click to select tab'
+                            }, getTabDisplayName(tab))
+                        )
+                    )
+                )
+            ),
+            
+            // 非全屏模式下的tab选择栏
+            !isFullscreen && h('div', { className: 'note-tabs-container' },
                 h('div', { className: 'note-tabs' },
                     tabs.map((tab, i) =>
                         h('span', { key: tab, className: 'note-tab-wrapper' },
@@ -1583,59 +1958,117 @@
                                 className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
                                 onClick: () => handleTabClick(tab),
                                 onDoubleClick: (e) => {
+                                    if (isGuest) return;
                                     e.preventDefault();
                                     e.stopPropagation();
                                     handleRenameStart(tab);
                                 },
-                                title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : 'Double-click to rename'
+                                title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Double-click to rename')
                             }, getTabDisplayName(tab))
                         )
                     )
                 ),
-                h('div', { className: 'note-tab-sort' },
+                showSortButtons && h('div', { className: 'note-tab-sort' },
                     h('button', {
                         className: 'note-sort-btn',
+                        onMouseDown: handleSortBtnMouseDown,
                         onClick: () => moveTab(activeTab, 'left'),
                         disabled: tabs.indexOf(activeTab) <= 0,
                         title: 'Move left'
                     }, '◀'),
                     h('button', {
                         className: 'note-sort-btn',
-                        onClick: () => moveTab(activeTab, 'right'),
+                        onMouseDown: handleSortBtnMouseDown,
+                        onClick: () => {
+                            moveTab(activeTab, 'right');
+                            setTimeout(() => {
+                                const currentTab = activeTabRef.current;
+                                handleRenameStart(currentTab);
+                            }, 50);
+                        },
                         disabled: tabs.indexOf(activeTab) >= tabs.length - 1,
                         title: 'Move right'
                     }, '▶')
                 )
             ),
             
-            h('div', { className: 'note-items', ref: listRef },
-                storageWarning && h('div', { className: 'note-warning-banner' },
-                    '⚠ Storage limit approaching. Older notes auto-removed at limit.'
+            // 全屏模式：三列网格布局
+            isFullscreen && !isMobile ? 
+                h('div', { className: 'note-fullscreen-grid', ref: fullscreenGridRef },
+                    fullscreenColumns.map((tab, colIdx) => {
+                        const isActive = tab === activeTab;
+                        const tabData = isActive 
+                            ? { notes: fullscreenActiveNotes, thumbMap, fileNames: attNames }
+                            : (otherTabData[tab] || { notes: [], thumbMap: {}, fileNames: {} });
+                        
+                        return h('div', { 
+                            className: `note-fullscreen-column ${isActive ? 'note-fullscreen-column-active' : ''}`,
+                            key: tab
+                        },
+                            isActive && fullscreenStarFilter && h('div', { className: 'note-star-filter-banner' }, '★ Showing starred notes only'),
+                            h('div', { className: 'note-items note-items-fullscreen' },
+                                tabData.notes.length > 0
+                                    ? tabData.notes.map((note, i) => h(NoteItem, { 
+                                        key: note.ts || i, 
+                                        note, 
+                                        onDelete: handleDelete,
+                                        onEdit: handleEdit,
+                                        onToggleStar: handleToggleStar,
+                                        onToggleCollapse: handleToggleCollapse,
+                                        searchTerm: '',
+                                        activeMatches: null,
+                                        noteRef: null,
+                                        activeTab: tab,
+                                        fontSize: fontSize - 1,
+                                        thumbMap: tabData.thumbMap,
+                                        attNames: tabData.fileNames,
+                                        isFullscreenColumn: !isActive
+                                    }))
+                                    : h('div', { className: 'note-empty' }, isActive ? 'No notes' : 'Loading...')
+                            )
+                        );
+                    })
+                )
+            :
+                // 非全屏模式：单列布局
+                h('div', { className: 'note-items', ref: listRef },
+                    h('div', { 
+                        ref: sentinelRef,
+                        className: 'note-loading-sentinel',
+                        key: 'load-more-sentinel',
+                        style: { display: (hasMore && !searchTerm) ? 'block' : 'none' },
+                        onClick: doLoadMore
+                    }, loadingMore ? 'Loading older notes...' : '▲ Load older notes'),
+                    
+                    storageWarning && h('div', { className: 'note-warning-banner' },
+                        '⚠ Storage limit approaching. Older notes auto-removed at limit.'
+                    ),
+                    isOverLimit && h('div', { className: 'note-warning-banner note-full-banner' },
+                        '⚠ Storage full. Please delete some notes before adding new ones.'
+                    ),
+                    starFilterActive && h('div', { className: 'note-star-filter-banner' }, '★ Showing starred notes only'),
+                    filteredNotes.length > 0
+                        ? filteredNotes.map((note, i) => h(NoteItem, { 
+                            key: note.ts || i, 
+                            note, 
+                            onDelete: handleDelete,
+                            onEdit: handleEdit,
+                            onToggleStar: handleToggleStar,
+                            onToggleCollapse: handleToggleCollapse,
+                            searchTerm,
+                            activeMatches: getActiveMatchesForNote(note),
+                            noteRef: activeMatchRef,
+                            activeTab,
+                            fontSize,
+                            thumbMap,
+                            attNames,
+                            isFullscreenColumn: false
+                        }))
+                        : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
                 ),
-                isOverLimit && h('div', { className: 'note-warning-banner note-full-banner' },
-                    '⚠ Storage full. Please delete some notes before adding new ones.'
-                ),
-                starFilterActive && h('div', { className: 'note-star-filter-banner' }, '★ Showing starred notes only'),
-                filteredNotes.length > 0
-                    ? filteredNotes.map((note, i) => h(NoteItem, { 
-                        key: i, 
-                        note, 
-                        onDelete: handleDelete,
-                        onEdit: handleEdit,
-                        onToggleStar: handleToggleStar,
-                        onToggleCollapse: handleToggleCollapse,
-                        searchTerm,
-                        activeMatches: getActiveMatchesForNote(note),
-                        noteRef: activeMatchRef,
-                        activeTab,
-                        fontSize,
-                        thumbMap,
-                        attNames
-                    }))
-                    : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
-            ),
             
-            h('div', { className: 'note-input-form' },
+            // 底部输入区域
+            h('div', { className: `note-input-form ${isFullscreen ? 'note-input-fullscreen' : ''}` },
                 h('textarea', {
                     ref: inputRef,
                     value: m,
@@ -1650,7 +2083,7 @@
                         e.target.style.height = 'auto';
                         e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
                     },
-                    placeholder: isOverLimit ? 'Storage full - delete old notes first' : 'Shift+Enter↵ send | Long press Send upload | Drag & drop files',
+                    placeholder: isOverLimit ? 'Storage full - delete old notes first' : (isGuest ? 'Shift+Enter↵ to send (Login to upload files)' : 'Shift+Enter↵ send | Long press Send to upload | Drag & drop files'),
                     className: `note-input ${isOverLimit ? 'note-input-disabled' : ''}`,
                     rows: 1,
                     disabled: isOverLimit
@@ -1661,7 +2094,7 @@
                     type: 'button',
                     ref: sendBtnRef,
                     disabled: isOverLimit,
-                    title: isOverLimit ? 'Storage full - please delete old notes' : 'Send (long press to upload files)'
+                    title: isOverLimit ? 'Storage full - please delete old notes' : (isGuest ? 'Send' : 'Send (long press to upload files)')
                 }, isOverLimit ? 'Full' : 'Send')
             )
         );
@@ -1670,14 +2103,18 @@
     function NoteApp() {
         const { username } = HFS.useSnapState();
         const [show, setShow] = useState(false);
+        const [hasAccess, setHasAccess] = useState(false);
 
         useEffect(() => {
+            checkAccess().then(allowed => {
+                setHasAccess(allowed || publicTabsList.length > 0);
+            });
             const fn = () => setShow(prev => !prev);
             window.addEventListener('toggle-notes', fn);
             return () => window.removeEventListener('toggle-notes', fn);
         }, []);
 
-        if (!username || !show) return null;
+        if (!hasAccess || !show) return null;
 
         return h('div', {
             className: 'note-overlay'
@@ -1694,6 +2131,21 @@
                 h('span', { 'aria-hidden': 'true' }, '✐'),
                 h('span', { className: 'btn-label' }, 'Notes')
             ]);
+        });
+    } else {
+        checkAccess().then(allowed => {
+            if (allowed || publicTabsList.length > 0) {
+                HFS.onEvent('appendMenuBar', () => {
+                    return h('button', {
+                        className: 'menu-bar-notes-btn',
+                        onClick() { window.dispatchEvent(new CustomEvent('toggle-notes')) },
+                        title: 'Open Notes'
+                    }, [
+                        h('span', { 'aria-hidden': 'true' }, '✐'),
+                        h('span', { className: 'btn-label' }, 'Notes')
+                    ]);
+                });
+            }
         });
     }
 

@@ -1,5 +1,5 @@
-exports.version = 2.0
-exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, and TXT export."
+exports.version = 2.3
+exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, and TXT export."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
 exports.frontend_js = ['main.js']
@@ -9,9 +9,15 @@ exports.config = {
         type: 'array',
         label: 'Tab List',
         fields: {
-            name: { label: 'Tab Name' }
+            name: { label: 'Tab Name' },
+            publicNote: {
+                type: 'boolean',
+                label: 'Allow notes visible on public page',
+                defaultValue: false,
+                helperText: 'When enabled, unauthenticated users (Guest) can see and send text-only notes in this tab.'
+            }
         },
-        defaultValue: [{ name: 'General' }],
+        defaultValue: [{ name: 'General', publicNote: false }],
         helperText: 'Add or remove tabs. Each tab has its own independent note storage.',
         frontend: true
     },
@@ -93,9 +99,9 @@ exports.init = async api => {
     const THUMB_PIXELS = 800
     const THUMB_QUALITY = 85
     const THUMB_MIN_SIZE = 100 * 1024
+    const PAGE_SIZE = 30
 
     const dbs = new Map()
-    const dbObjects = new Map()
     let backupTimer = null
     let exportTimer = null
     let tempCleanupTimer = null
@@ -108,8 +114,18 @@ exports.init = async api => {
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
     
-    function isAllowed(username) {
-        if (!username) return false
+    function getTabPublicConfig(tab) {
+        const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
+        const found = list.find(t => t.name === tab)
+        return found ? (found.publicNote === true) : false
+    }
+
+    function isAllowed(username, tab) {
+        if (username === 'admin') return true
+        if (!username) {
+            if (tab) return getTabPublicConfig(tab)
+            return false
+        }
         if (!api.getConfig('restrictUsers')) return true
         const allowed = api.getConfig('allowedUsers') || []
         return allowed.includes(username)
@@ -124,8 +140,13 @@ exports.init = async api => {
     }
 
     function getTabs() {
-        const list = api.getConfig('tabList') || [{ name: 'General' }]
+        const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
         return list.map(t => t.name).filter(Boolean)
+    }
+
+    function getPublicTabs() {
+        const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
+        return list.filter(t => t.publicNote === true).map(t => t.name).filter(Boolean)
     }
 
     function getTimestamp() {
@@ -298,11 +319,6 @@ exports.init = async api => {
                     '-y', thumbPath
                 ])
                 
-                let stderr = ''
-                ffmpeg.stderr.on('data', data => {
-                    stderr += data.toString()
-                })
-                
                 ffmpeg.on('exit', code => {
                     if (code === 0) {
                         resolve(true)
@@ -350,20 +366,6 @@ exports.init = async api => {
                 .toFile(outputPath)
             return true
         } catch (e) {
-            try {
-                const sharpResult = api.customApiCall?.('sharp', imageBuffer)?.[0]
-                if (sharpResult) {
-                    if (imageBuffer.length < THUMB_MIN_SIZE) return false
-                    
-                    const thumbBuffer = await sharpResult
-                        .resize(THUMB_PIXELS, THUMB_PIXELS, { fit: 'inside', withoutEnlargement: true })
-                        .rotate()
-                        .jpeg({ quality: THUMB_QUALITY })
-                        .toBuffer()
-                    await fs.writeFile(outputPath, Buffer.from(thumbBuffer))
-                    return true
-                }
-            } catch (e2) {}
             return false
         }
     }
@@ -382,12 +384,6 @@ exports.init = async api => {
         }
         
         return false
-    }
-
-    function getVideoThumbPath(tab, fileId) {
-        const ext = path.extname(fileId)
-        const baseName = path.basename(fileId, ext)
-        return `/~/notes/thumb/${tab}/${baseName}.jpg`
     }
 
     async function promoteImages(tab, imageIds) {
@@ -617,11 +613,31 @@ exports.init = async api => {
 
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
-        
         const tabsData = await getTabsData()
-        const tabs = tabsData.order.length > 0 ? tabsData.order : getTabs()
-        
+        let tabs = tabsData.order.length > 0 ? tabsData.order : getTabs()
+
+        if (!username) {
+            const pubTabs = getPublicTabs()
+            tabs = tabs.filter(t => pubTabs.includes(t))
+            const result = {}
+            for (const tab of tabs) {
+                const db = await getDb(tab)
+                result[tab] = db.size()
+            }
+            ctx.body = { 
+                tabs, 
+                counts: result, 
+                warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
+                tabNames: tabsData.names,
+                maxRetain: RETAIN_NOTES,
+                isGuest: true
+            }
+            ctx.status = 200
+            return
+        }
+
+        if (!isAllowed(username)) { ctx.status = 403; return }
+
         const result = {}
         for (const tab of tabs) {
             const db = await getDb(tab)
@@ -632,14 +648,15 @@ exports.init = async api => {
             counts: result, 
             warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
             tabNames: tabsData.names,
-            maxRetain: RETAIN_NOTES
+            maxRetain: RETAIN_NOTES,
+            isGuest: false
         }
         ctx.status = 200
     }
 
     async function renameTab(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
         const { tab, newName } = body
@@ -663,18 +680,36 @@ exports.init = async api => {
 
     async function listNotes(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
-        
         const tab = ctx.query?.tab
         if (!tab) { ctx.status = 400; return }
+        if (!isAllowed(username, tab)) { ctx.status = 403; return }
+        
+        const offset = parseInt(ctx.query?.offset) || 0
+        const limit = Math.min(parseInt(ctx.query?.limit) || PAGE_SIZE, 100)
         
         const db = await getDb(tab)
         const notes = await db.asObject()
-        const count = Object.keys(notes).length
+        // Sort chronologically ascending (oldest first)
+        const allKeys = Object.keys(notes).sort()
+        const totalCount = allKeys.length
+        
+        // offset=0 means the most recent entries
+        // We slice from (totalCount - offset - limit) to (totalCount - offset)
+        const endIdx = totalCount - offset
+        const startIdx = Math.max(0, endIdx - limit)
+        const pageKeys = allKeys.slice(startIdx, endIdx)
+        
+        // Build pageNotes preserving chronological order (oldest first in the page)
+        const pageNotes = {}
+        for (const k of pageKeys) {
+            pageNotes[k] = notes[k]
+        }
+        
+        const hasMoreData = startIdx > 0
         
         const imageIds = new Set()
         const movIds = new Set()
-        for (const note of Object.values(notes)) {
+        for (const note of Object.values(pageNotes)) {
             if (note.m) {
                 for (const id of extractImageIds(note.m)) imageIds.add(id)
                 for (const id of extractMovIds(note.m)) movIds.add(id)
@@ -699,19 +734,21 @@ exports.init = async api => {
         } catch {}
         
         ctx.body = { 
-            notes, 
-            count, 
-            warning: count >= MAX_STORAGE_WARNING, 
+            notes: pageNotes, 
+            count: totalCount, 
+            warning: totalCount >= MAX_STORAGE_WARNING, 
             maxRetain: RETAIN_NOTES,
             thumbMap,
-            fileNames
+            fileNames,
+            hasMore: hasMoreData,
+            offset: offset,
+            limit: limit
         }
         ctx.status = 200
     }
 
     async function addNote(ctx) {
-        const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        const username = getCurrentUsername(ctx) || 'Guest'
         
         let body = ctx.state.params || ctx.request?.body || {}
         
@@ -723,6 +760,7 @@ exports.init = async api => {
             ctx.status = 400; return
         }
         if (!tab) { ctx.status = 400; return }
+        if (!isAllowed(username, tab)) { ctx.status = 403; return }
         
         const tdb = await throttleDb
         const last = await tdb.get(username)
@@ -744,18 +782,20 @@ exports.init = async api => {
         const lineCount = m.split('\n').length
         const autoCollapsed = forceCollapsed || lineCount > AUTO_COLLAPSE_LINES
         
-        const imageIds = extractImageIds(m)
-        await promoteImages(tab, imageIds)
-        
-        const movIds = extractMovIds(m)
-        if (movIds.length > 0) {
-            const movDir = getTabMovDir(tab)
-            for (const movId of movIds) {
-                const videoPath = path.join(movDir, movId)
-                try {
-                    await fs.stat(videoPath)
-                    extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
-                } catch {}
+        if (username && username !== 'Guest') {
+            const imageIds = extractImageIds(m)
+            await promoteImages(tab, imageIds)
+            
+            const movIds = extractMovIds(m)
+            if (movIds.length > 0) {
+                const movDir = getTabMovDir(tab)
+                for (const movId of movIds) {
+                    const videoPath = path.join(movDir, movId)
+                    try {
+                        await fs.stat(videoPath)
+                        extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
+                    } catch {}
+                }
             }
         }
         
@@ -774,7 +814,7 @@ exports.init = async api => {
 
     async function updateNote(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
         
@@ -787,7 +827,7 @@ exports.init = async api => {
         const db = await getDb(tab)
         const note = await db.get(ts)
         if (!note) { ctx.status = 404; return }
-        if (note.u !== username) { ctx.status = 403; return }
+        if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
         const oldImgIds = extractImageIds(note.m)
         const newImgIds = extractImageIds(m)
@@ -830,7 +870,7 @@ exports.init = async api => {
             }
         }
         
-        db.put(ts, { m, u: username, starred: note.starred || false, collapsed: note.collapsed || false })
+        db.put(ts, { m, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
         api.notifyClient('notes', 'updateNote', { ts, tab, m, starred: note.starred || false, collapsed: note.collapsed || false })
         ctx.status = 200
         
@@ -841,7 +881,7 @@ exports.init = async api => {
 
     async function toggleStar(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
         
@@ -852,10 +892,10 @@ exports.init = async api => {
         const db = await getDb(tab)
         const note = await db.get(ts)
         if (!note) { ctx.status = 404; return }
-        if (note.u !== username) { ctx.status = 403; return }
+        if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
         const newStarred = !(note.starred || false)
-        db.put(ts, { m: note.m, u: username, starred: newStarred, collapsed: note.collapsed || false })
+        db.put(ts, { m: note.m, u: note.u, starred: newStarred, collapsed: note.collapsed || false })
         api.notifyClient('notes', 'toggleStar', { ts, tab, starred: newStarred })
         ctx.body = { starred: newStarred }
         ctx.status = 200
@@ -863,6 +903,7 @@ exports.init = async api => {
 
     async function toggleCollapse(ctx) {
         const username = getCurrentUsername(ctx)
+        if (!username) { ctx.status = 403; return }
         if (!isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
@@ -874,10 +915,10 @@ exports.init = async api => {
         const db = await getDb(tab)
         const note = await db.get(ts)
         if (!note) { ctx.status = 404; return }
-        if (note.u !== username) { ctx.status = 403; return }
+        if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
         const newCollapsed = !(note.collapsed || false)
-        db.put(ts, { m: note.m, u: username, starred: note.starred || false, collapsed: newCollapsed })
+        db.put(ts, { m: note.m, u: note.u, starred: note.starred || false, collapsed: newCollapsed })
         api.notifyClient('notes', 'toggleCollapse', { ts, tab, collapsed: newCollapsed })
         ctx.body = { collapsed: newCollapsed }
         ctx.status = 200
@@ -885,7 +926,7 @@ exports.init = async api => {
 
     async function deleteNote(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
         
@@ -896,7 +937,7 @@ exports.init = async api => {
         const db = await getDb(tab)
         const note = await db.get(ts)
         if (!note) { ctx.status = 404; return }
-        if (note.u !== username) { ctx.status = 403; return }
+        if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
         if (note.m) {
             const imgIds = extractImageIds(note.m)
@@ -934,7 +975,7 @@ exports.init = async api => {
 
     async function reorderTabs(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
         const { tabs: newOrder } = body
@@ -951,13 +992,18 @@ exports.init = async api => {
 
     async function checkAccess(ctx) {
         const username = getCurrentUsername(ctx)
-        ctx.body = { allowed: isAllowed(username) }
+        const publicTabs = getPublicTabs()
+        ctx.body = { 
+            allowed: !!username || publicTabs.length > 0,
+            isGuest: !username,
+            publicTabs: publicTabs
+        }
         ctx.status = 200
     }
 
     async function adminOverview(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         const tabs = getTabs()
         const dbInfo = {}
@@ -1100,7 +1146,7 @@ exports.init = async api => {
         
         ctx.body = {
             config: {
-                tabList: api.getConfig('tabList') || [{ name: 'General' }],
+                tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }],
                 maxNoteLen: MAX_NOTE_LEN, retainNotes: RETAIN_NOTES,
                 spamDelay: SPAM_DELAY, storageWarning: MAX_STORAGE_WARNING,
                 backupInterval: api.getConfig('backupInterval'),
@@ -1109,7 +1155,8 @@ exports.init = async api => {
                 maxImgSize: formatBytes(MAX_IMG_SIZE),
                 maxFileSize: formatBytes(MAX_FILE_SIZE),
                 ffmpegPath: api.getConfig('ffmpeg_path') || 'ffmpeg',
-                thumbnailTime: api.getConfig('thumbnail_time') || '00:00:05'
+                thumbnailTime: api.getConfig('thumbnail_time') || '00:00:05',
+                pageSize: PAGE_SIZE
             },
             databases: dbInfo, totalNotes,
             storageWarning: totalNotes >= MAX_STORAGE_WARNING, backups,
@@ -1136,13 +1183,13 @@ exports.init = async api => {
 
     async function adminExport(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         const tab = ctx.query?.tab
         const tabs = getTabs()
         const exportData = {
             exportTime: new Date().toISOString(), exportedBy: username,
-            config: { tabList: api.getConfig('tabList') || [{ name: 'General' }] }, data: {}
+            config: { tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }] }, data: {}
         }
         
         const tabsToExport = tab ? [tab] : tabs
@@ -1160,7 +1207,7 @@ exports.init = async api => {
 
     async function adminImport(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body
         try {
@@ -1199,7 +1246,7 @@ exports.init = async api => {
 
     async function adminBackup(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         try {
             const backupFiles = await createBackup()
@@ -1228,7 +1275,7 @@ exports.init = async api => {
 
     async function adminClearTab(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         let body = ctx.state.params || ctx.request?.body || {}
         const { tab } = body
@@ -1306,7 +1353,7 @@ exports.init = async api => {
     
     async function adminExportTxt(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         try {
             const txtFiles = await exportTxtFiles()
@@ -1324,7 +1371,7 @@ exports.init = async api => {
     
     async function uploadImage(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         try {
             const body = ctx.request?.body || ctx.state?.params || {}
@@ -1389,7 +1436,7 @@ exports.init = async api => {
     
     async function uploadFile(ctx) {
         const username = getCurrentUsername(ctx)
-        if (!isAllowed(username)) { ctx.status = 403; return }
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
 
         try {
             const body = ctx.request?.body || ctx.state?.params || {}
