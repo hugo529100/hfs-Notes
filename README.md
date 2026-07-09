@@ -146,49 +146,93 @@ VI. Storage Architecture (v2.4)
 6.1 Directory Structure
 text
 storage/
+
 ├── tabs/                              # New file-based note storage
+
 │   ├── _tabs_map.json                 # Tab order & custom names mapping
+
 │   ├── General/                       # Tab folder (sanitized name)
+
 │   │   ├── _index.json                # Tab index: timestamps + metadata
+
 │   │   ├── 2026-07-09T14_30_25_000Z.json   # Individual note content
+
 │   │   ├── 2026-07-09T14_31_10_000Z.json
+
 │   │   └── ...
+
 │   ├── Work/
+
 │   │   ├── _index.json
+
 │   │   └── ...
+
 │   └── Personal/
+
 │       ├── _index.json
+
 │       └── ...
+
 ├── img/                               # Images (by tab)
+
 │   └── {tab}/
+
 │       ├── temp/                      # Temporary images (auto-promoted)
+
 │       └── *.jpg/png/webp...
+
 ├── mov/                               # Videos & Audio (by tab)
+
 │   └── {tab}/
+
 │       ├── .filenames                 # Original filename mapping
+
 │       └── *.mp4/webm/mp3...
+
 ├── att/                               # Attachments (by tab)
+
 │   └── {tab}/
+
 │       ├── .filenames                 # Original filename mapping
+
 │       └── *.*
+
 ├── thumb/                             # Thumbnails (by tab)
+
 │   └── {tab}/
+
 │       └── *.jpg
+
 └── backup/                            # Backups
+
     ├── 20260709_143025/               # JSON mirror backup folder
+    
     │   └── tabs/
+    
     │       ├── _tabs_map.json
+    
     │       ├── General/
+    
     │       │   ├── _index.json
+    
     │       │   └── *.json
+    
     │       └── ...
+    
     └── txt_exports/                   # TXT export folder
+    
         └── 20260709_143025/           # Export timestamp folder
+        
             ├── General/               # Tab subdirectory
+            
             │   ├── 2026-07-09T14_30_25_000Z.txt
+            
             │   ├── 2026-07-09T14_31_10_000Z.txt
+            
             │   └── ...
+            
             └── Work/
+            
                 └── ...
 6.2 Core Data Files
 _tabs_map.json - Tab Mapping
