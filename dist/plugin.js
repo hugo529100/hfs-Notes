@@ -21,6 +21,21 @@ exports.config = {
         helperText: 'Add or remove tabs. Each tab has its own independent note storage.',
         frontend: true
     },
+    restrictUsers: {
+        type: 'boolean',
+        label: 'Restrict user access',
+        helperText: 'When enabled, only selected users below can access notes. When disabled, all logged-in users can access.',
+        defaultValue: false,
+        frontend: true
+    },
+    allowedUsers: {
+        type: 'username',
+        multiple: true,
+        label: 'Allowed users',
+        helperText: 'Only applies when "Restrict user access" is enabled above.',
+        showIf: x => x.restrictUsers,
+        frontend: true
+    },
     backupInterval: {
         type: 'number',
         label: 'Auto Backup Interval (hours)',
@@ -40,34 +55,12 @@ exports.config = {
         defaultValue: false,
         frontend: true
     },
-    restrictUsers: {
+    useSharpPlugin: {
         type: 'boolean',
-        label: 'Restrict user access',
-        helperText: 'When enabled, only selected users below can access notes. When disabled, all logged-in users can access.',
-        defaultValue: false,
+        defaultValue: true,
+        label: 'Use Sharp plugin for thumbnails',
+        helperText: 'Requires rejetto/sharp plugin to be installed. Falls back to built-in method if disabled.',
         frontend: true
-    },
-    allowedUsers: {
-        type: 'username',
-        multiple: true,
-        label: 'Allowed users',
-        helperText: 'Only applies when "Restrict user access" is enabled above.',
-        showIf: x => x.restrictUsers,
-        frontend: true
-    },
-    ffmpeg_path: {
-        type: 'real_path',
-        fileMask: 'ffmpeg*',
-        defaultValue: 'ffmpeg.exe',
-        helperText: 'Path to FFmpeg executable. Leave empty if it\'s in the system path. Used for video thumbnail extraction.',
-        xs: 6
-    },
-    thumbnail_time: {
-        type: 'string',
-        defaultValue: '00:00:05',
-        label: 'Video thumbnail time position',
-        helperText: 'Time position for video thumbnail extraction (HH:MM:SS)',
-        xs: 6
     },
     thumbQuality: {
         type: 'number',
@@ -87,12 +80,19 @@ exports.config = {
         helperText: 'Longest side dimension in pixels',
         xs: 6
     },
-    useSharpPlugin: {
-        type: 'boolean',
-        defaultValue: true,
-        label: 'Use Sharp plugin for thumbnails',
-        helperText: 'Requires rejetto/sharp plugin to be installed. Falls back to built-in method if disabled.',
-        frontend: true
+    ffmpeg_path: {
+        type: 'real_path',
+        fileMask: 'ffmpeg*',
+        defaultValue: 'ffmpeg.exe',
+        helperText: 'Path to FFmpeg executable. Leave empty if it\'s in the system path. Used for video thumbnail extraction.',
+        xs: 6
+    },
+    thumbnail_time: {
+        type: 'string',
+        defaultValue: '00:00:05',
+        label: 'Video thumbnail time position',
+        helperText: 'Time position for video thumbnail extraction (HH:MM:SS)',
+        xs: 6
     }
 }
 
