@@ -1,5 +1,5 @@
-exports.version = 2.4
-exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, and TXT export."
+exports.version = 2.6
+exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, and progressive loading."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
 exports.frontend_js = ['main.js']
@@ -119,10 +119,11 @@ exports.init = async api => {
     const SPAM_DELAY = 200
     const MAX_STORAGE_WARNING = 400
     const MAX_IMG_SIZE = 40 * 1024 * 1024
-    const MAX_FILE_SIZE = 100 * 1024 * 1024
+    const MAX_FILE_SIZE = 200 * 1024 * 1024
     const TEMP_IMG_TTL = 60 * 60 * 1000
     const THUMB_QUALITY = 85
     const PAGE_SIZE = 10
+    const SUMMARY_LENGTH = 200
 
     let backupTimer = null
     let tempCleanupTimer = null
@@ -130,7 +131,6 @@ exports.init = async api => {
     
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
     
-    // 確保所有目錄存在
     await fs.mkdir(TABS_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(IMG_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
@@ -138,7 +138,6 @@ exports.init = async api => {
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
 
-    // 初始化 tabs_map.json
     try {
         await fs.stat(TABS_MAP_FILE)
     } catch {
@@ -146,20 +145,17 @@ exports.init = async api => {
         await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ order: tabs, names: {} }, null, 2))
     }
 
-    // ===== 同步 tabs_map.json 的輔助函數 =====
     async function syncTabsMapWithConfig() {
         const tabsMap = await loadTabsMap()
         const configTabs = getTabs()
         let needsSave = false
         
-        // 1. 移除 order 中已不存在的 tab
         const newOrder = tabsMap.order.filter(t => configTabs.includes(t))
         if (newOrder.length !== tabsMap.order.length) {
             tabsMap.order = newOrder
             needsSave = true
         }
         
-        // 2. 添加 config 中有但 order 中沒有的新 tab
         for (const tab of configTabs) {
             if (!tabsMap.order.includes(tab)) {
                 tabsMap.order.push(tab)
@@ -167,7 +163,6 @@ exports.init = async api => {
             }
         }
         
-        // 3. 清理 names 中已不存在的 tab
         for (const tabName of Object.keys(tabsMap.names)) {
             if (!configTabs.includes(tabName)) {
                 delete tabsMap.names[tabName]
@@ -182,7 +177,6 @@ exports.init = async api => {
         return tabsMap
     }
 
-    // 加強版的文本清理函數
     function sanitizeForDb(text) {
         if (!text || typeof text !== 'string') return ''
         return text
@@ -302,8 +296,6 @@ exports.init = async api => {
         return path.join(dir, '.filenames')
     }
 
-    // ===== Tab 映射表操作 =====
-    
     async function loadTabsMap() {
         try {
             const data = await fs.readFile(TABS_MAP_FILE, 'utf-8')
@@ -322,8 +314,6 @@ exports.init = async api => {
         await fs.writeFile(TABS_MAP_FILE, JSON.stringify(mapData, null, 2))
     }
 
-    // ===== Tab 索引操作 =====
-    
     async function loadTabIndex(tab) {
         try {
             const indexPath = getTabIndexPath(tab)
@@ -341,8 +331,6 @@ exports.init = async api => {
         await fs.writeFile(indexPath, JSON.stringify(indexData, null, 2))
     }
 
-    // ===== 筆記內容操作 =====
-    
     async function loadNoteContent(tab, ts) {
         try {
             const filePath = getNoteFilePath(tab, ts)
@@ -365,8 +353,6 @@ exports.init = async api => {
         await fs.unlink(filePath).catch(() => {})
     }
 
-    // ===== 高級筆記操作 =====
-    
     async function getTabNoteCount(tab) {
         const index = await loadTabIndex(tab)
         return Object.keys(index.notes).length
@@ -427,8 +413,6 @@ exports.init = async api => {
         } catch {}
     }
 
-    // ===== 文件存儲相關函數 =====
-    
     async function saveFileName(tab, type, fileId, originalName) {
         const mapPath = getNameMapPath(tab, type)
         const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
@@ -712,8 +696,6 @@ exports.init = async api => {
         } catch {}
     }
 
-    // ===== 備份邏輯 =====
-    
     async function createBackup() {
         const tabs = getTabs()
         const timestamp = getTimestamp()
@@ -766,7 +748,6 @@ exports.init = async api => {
         const exportFiles = []
         const timestamp = getTimestamp()
         
-        // 創建以時間戳命名的導出文件夾
         const exportFolder = path.join(BACKUP_DIR, 'txt_exports', timestamp)
         await fs.mkdir(exportFolder, { recursive: true }).catch(() => {})
         
@@ -777,7 +758,6 @@ exports.init = async api => {
                 
                 if (timestamps.length === 0) continue
                 
-                // 為每個 tab 創建子目錄
                 const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
                 const tabExportDir = path.join(exportFolder, safeTabName)
                 await fs.mkdir(tabExportDir, { recursive: true }).catch(() => {})
@@ -789,7 +769,6 @@ exports.init = async api => {
                         const meta = index.notes[ts]
                         const content = await loadNoteContent(tab, ts)
                         if (content !== null) {
-                            // 每條筆記獨立一個 txt 文件
                             const safeTs = ts.replace(/[\\/:*?"<>|]/g, '_')
                             const txtFileName = `${safeTs}.txt`
                             const txtFilePath = path.join(tabExportDir, txtFileName)
@@ -801,22 +780,16 @@ exports.init = async api => {
                             exportFiles.push(txtFilePath)
                             exportedCount++
                         }
-                    } catch (noteErr) {
-                        // 單條筆記導出失敗不影響其他
-                    }
+                    } catch (noteErr) {}
                 }
                 
-                // 如果該 tab 沒有導出任何筆記，刪除空目錄
                 if (exportedCount === 0) {
                     await fs.rmdir(tabExportDir).catch(() => {})
                 }
                 
-            } catch (e) {
-                // 單個 tab 導出失敗不影響其他
-            }
+            } catch (e) {}
         }
         
-        // 如果整個導出文件夾為空，刪除它
         try {
             const tabDirs = await fs.readdir(exportFolder).catch(() => [])
             if (tabDirs.length === 0) {
@@ -832,7 +805,6 @@ exports.init = async api => {
             const retentionDays = api.getConfig('backupRetentionDays') || 3
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
             
-            // 清理舊的 JSON 鏡像備份文件夾
             const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true }).catch(() => [])
             
             for (const entry of entries) {
@@ -848,7 +820,6 @@ exports.init = async api => {
                 } catch {}
             }
             
-            // 清理舊的 TXT 導出文件夾（以時間戳命名的文件夾）
             const txtBaseDir = path.join(BACKUP_DIR, 'txt_exports')
             try {
                 const txtFolders = await fs.readdir(txtBaseDir, { withFileTypes: true }).catch(() => [])
@@ -916,13 +887,11 @@ exports.init = async api => {
 
     setupBackupTimer()
     
-    // ===== 訂閱 tabList 變更，自動同步 _tabs_map.json =====
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
         setupBackupTimer()
         setTimeout(async () => {
             await performScheduledBackup()
         }, 500)
-        // 當 tabList 變更時，同步 _tabs_map.json 並通知前端
         if (api.getConfig('tabList')) {
             syncTabsMapWithConfig().then(tabsMap => {
                 api.notifyClient('notes', 'tabsReordered', { tabs: tabsMap.order })
@@ -930,10 +899,8 @@ exports.init = async api => {
         }
     })
 
-    // ===== getTabInfo - 確保合併 tabsMap.order 和 config tabs =====
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
-        // 先同步 tabs_map.json，確保新添加的 tab 出現在 order 中
         const tabsMap = await syncTabsMapWithConfig()
         let tabs = tabsMap.order.length > 0 ? tabsMap.order : getTabs()
 
@@ -1006,6 +973,7 @@ exports.init = async api => {
         
         const offset = parseInt(ctx.query?.offset) || 0
         const limit = Math.min(parseInt(ctx.query?.limit) || PAGE_SIZE, 100)
+        const summaryOnly = ctx.query?.summary === '1'
         
         const index = await loadTabIndex(tab)
         const allTimestamps = Object.keys(index.notes).sort()
@@ -1023,14 +991,27 @@ exports.init = async api => {
             const meta = index.notes[ts]
             const content = await loadNoteContent(tab, ts)
             if (content !== null) {
-                pageNotes[ts] = {
-                    m: content,
-                    u: meta.u,
-                    starred: meta.starred || false,
-                    collapsed: meta.collapsed || false
+                if (summaryOnly) {
+                    const summary = content.substring(0, SUMMARY_LENGTH)
+                    pageNotes[ts] = {
+                        s: summary,
+                        hasMore: content.length > SUMMARY_LENGTH,
+                        u: meta.u,
+                        starred: meta.starred || false,
+                        collapsed: meta.collapsed || false
+                    }
+                    for (const id of extractImageIds(summary)) imageIds.add(id)
+                    for (const id of extractMovIds(summary)) movIds.add(id)
+                } else {
+                    pageNotes[ts] = {
+                        m: content,
+                        u: meta.u,
+                        starred: meta.starred || false,
+                        collapsed: meta.collapsed || false
+                    }
+                    for (const id of extractImageIds(content)) imageIds.add(id)
+                    for (const id of extractMovIds(content)) movIds.add(id)
                 }
-                for (const id of extractImageIds(content)) imageIds.add(id)
-                for (const id of extractMovIds(content)) movIds.add(id)
             }
         }
         
@@ -1063,6 +1044,20 @@ exports.init = async api => {
             offset: offset,
             limit: limit
         }
+        ctx.status = 200
+    }
+
+    async function getNoteFull(ctx) {
+        const username = getCurrentUsername(ctx)
+        const tab = ctx.query?.tab
+        const ts = ctx.query?.ts
+        if (!tab || !ts) { ctx.status = 400; return }
+        if (!isAllowed(username, tab)) { ctx.status = 403; return }
+        
+        const note = await getNoteWithContent(tab, ts)
+        if (!note) { ctx.status = 404; return }
+        
+        ctx.body = { m: note.m }
         ctx.status = 200
     }
 
@@ -2029,7 +2024,6 @@ exports.init = async api => {
             const p = ctx.path
             const method = ctx.method.toUpperCase()
             
-            // 處理縮略圖請求
             if (p.startsWith('/~/notes/thumb/')) {
                 const parts = p.replace('/~/notes/thumb/', '').split('/')
                 if (parts.length >= 2) {
@@ -2039,7 +2033,6 @@ exports.init = async api => {
                 return
             }
             
-            // 處理圖片請求
             if (p.startsWith('/~/notes/img/')) {
                 const pathParts = p.replace('/~/notes/img/', '').split('/')
                 if (pathParts[0] === 'temp' && pathParts.length >= 3) {
@@ -2053,7 +2046,6 @@ exports.init = async api => {
                 return
             }
             
-            // 處理視頻/音頻請求
             if (p.startsWith('/~/notes/mov/')) {
                 const parts = p.replace('/~/notes/mov/', '').split('/')
                 if (parts.length >= 2) {
@@ -2063,7 +2055,6 @@ exports.init = async api => {
                 return
             }
             
-            // 處理附件請求
             if (p.startsWith('/~/notes/att/')) {
                 const parts = p.replace('/~/notes/att/', '').split('/')
                 if (parts.length >= 2) {
@@ -2073,11 +2064,11 @@ exports.init = async api => {
                 return
             }
             
-            // 處理 API 請求
             if (!p.startsWith(API_BASE)) return
             
             if (p === `${API_BASE}check` && method === 'GET') { await checkAccess(ctx); return }
             if (p === `${API_BASE}list` && method === 'GET') { await listNotes(ctx); return }
+            if (p === `${API_BASE}get-full` && method === 'GET') { await getNoteFull(ctx); return }
             if (p === `${API_BASE}tabs` && method === 'GET') { await getTabInfo(ctx); return }
             if (p === `${API_BASE}add` && method === 'POST') { await addNote(ctx); return }
             if (p === `${API_BASE}update` && method === 'POST') { await updateNote(ctx); return }

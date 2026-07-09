@@ -110,8 +110,8 @@
                 const files = Array.from(input.files);
                 if (files.length === 0) { reject(new Error('No file selected')); return; }
                 for (const f of files) {
-                    if (f.size > 100 * 1024 * 1024) {
-                        HFS.toast(`File "${f.name}" too large (max 100MB)`, 'error');
+                    if (f.size > 200 * 1024 * 1024) {
+                        HFS.toast(`File "${f.name}" too large (max 200MB)`, 'error');
                         reject(new Error('File too large')); return;
                     }
                 }
@@ -138,11 +138,46 @@
     let globalSetEditValue = null;
     let globalActiveTab = '';
 
+    /**
+     * 滚动锚定：锁定锚点元素的视口位置，执行操作后补偿滚动偏移
+     * @param {HTMLElement} container 滚动容器 (.note-items)
+     * @param {HTMLElement} anchorElement 锚点元素（按钮或编辑区域）
+     * @param {Function} callback 执行高度变化操作
+     */
+    function anchorScroll(container, anchorElement, callback) {
+        if (!container || !anchorElement) {
+            callback();
+            return;
+        }
+        
+        const anchorRect = anchorElement.getBoundingClientRect();
+        const anchorTop = anchorRect.top;
+        
+        callback();
+        
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                const newAnchorRect = anchorElement.getBoundingClientRect();
+                const newAnchorTop = newAnchorRect.top;
+                const delta = newAnchorTop - anchorTop;
+                
+                if (Math.abs(delta) > 0.5) {
+                    container.scrollTop += delta;
+                }
+            });
+        });
+    }
+
     function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName }) {
-        const { u, m, ts, starred, collapsed } = note;
+        const { u, ts, starred, collapsed } = note;
+        // 兼容新旧 API：m 是完整内容，s 是摘要
+        const summaryText = note.s || (note.m ? note.m.substring(0, 200) : '');
+        const hasMoreContent = note.hasMore !== undefined ? note.hasMore : (note.m ? note.m.length > 200 : false);
+        const initialFullContent = note.m || null;
+        
         const { username } = HFS.useSnapState();
         const [editing, setEditing] = useState(false);
-        const [editVal, setEditVal] = useState(m);
+        const [editVal, setEditVal] = useState('');
         const inputRef = useRef(null);
         const textareaRef = useRef(null);
         const noteItemRef = useRef(null);
@@ -150,6 +185,8 @@
         const [videoPlaying, setVideoPlaying] = useState(false);
         const [localCollapsed, setLocalCollapsed] = useState(null);
         const [imageViewMode, setImageViewMode] = useState({});
+        const [fullContent, setFullContent] = useState(initialFullContent);
+        const [loadingFull, setLoadingFull] = useState(false);
         
         const isAdminUser = username === 'admin';
         const isOwner = username && (isAdminUser || username === u);
@@ -164,6 +201,8 @@
             setLocalCollapsed(null);
             setImageViewMode({});
             setVideoPlaying(false);
+            setFullContent(initialFullContent);
+            setLoadingFull(false);
             if (videoRef.current) {
                 videoRef.current.pause();
                 videoRef.current.style.display = 'none';
@@ -216,53 +255,118 @@
             };
         }, [editing, ts, effectiveTab, editVal]);
         
+        // 展开时加载完整内容
+        const loadFullContent = useCallback(async () => {
+            if (fullContent !== null || loadingFull || !hasMoreContent) return;
+            setLoadingFull(true);
+            try {
+                const res = await fetch(`/~/api/notes/get-full?ts=${encodeURIComponent(ts)}&tab=${encodeURIComponent(effectiveTab)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    setFullContent(data.m || summaryText);
+                } else {
+                    setFullContent(summaryText);
+                }
+            } catch (e) {
+                setFullContent(summaryText);
+            } finally {
+                setLoadingFull(false);
+            }
+        }, [fullContent, loadingFull, hasMoreContent, ts, effectiveTab, summaryText]);
+        
+        // 当展开且需要加载完整内容时
+        useEffect(() => {
+            if (!effectiveCollapsed && !isFullscreenColumn && fullContent === null && hasMoreContent) {
+                loadFullContent();
+            }
+        }, [effectiveCollapsed, isFullscreenColumn, fullContent, hasMoreContent, loadFullContent]);
+        
         const handleDblClick = () => {
             if (isFullscreenColumn) return;
             if (isOwner && !currentGuest) {
-                setEditing(true);
-                setEditVal(m);
-                globalEditingNoteTs = ts;
-                globalEditingTab = effectiveTab;
-                globalEditValue = m;
-                globalSetEditValue = setEditVal;
-                globalActiveTab = effectiveTab;
+                const noteEl = noteItemRef.current;
+                const scrollContainer = noteEl ? noteEl.closest('.note-items') : null;
+                const headerRow = noteEl ? noteEl.querySelector('.note-header-row') : null;
+                const anchorEl = headerRow || noteEl;
                 
-                setTimeout(() => {
-                    inputRef.current?.focus();
-                    if (textareaRef.current) {
-                        globalEditTextareaRef = textareaRef;
-                        textareaRef.current.style.height = 'auto';
-                        textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
-                        requestAnimationFrame(() => {
-                            textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        });
-                    }
-                }, 50);
+                // 先加载完整内容，再进入编辑
+                const enterEdit = () => {
+                    const content = fullContent || summaryText;
+                    setEditing(true);
+                    setEditVal(content);
+                    globalEditingNoteTs = ts;
+                    globalEditingTab = effectiveTab;
+                    globalEditValue = content;
+                    globalSetEditValue = setEditVal;
+                    globalActiveTab = effectiveTab;
+                    
+                    setTimeout(() => {
+                        inputRef.current?.focus();
+                        if (textareaRef.current) {
+                            globalEditTextareaRef = textareaRef;
+                            textareaRef.current.style.height = 'auto';
+                            textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+                        }
+                    }, 50);
+                };
+                
+                if (scrollContainer && anchorEl) {
+                    anchorScroll(scrollContainer, anchorEl, enterEdit);
+                } else {
+                    enterEdit();
+                }
             }
         };
         
         const handleSave = () => {
             const trimmed = editVal.trim();
-            if (trimmed) {
-                onEdit(ts, trimmed);
+            const noteEl = noteItemRef.current;
+            const scrollContainer = noteEl ? noteEl.closest('.note-items') : null;
+            const headerRow = noteEl ? noteEl.querySelector('.note-header-row') : null;
+            const anchorEl = headerRow || noteEl;
+            
+            const doSave = () => {
+                if (trimmed) {
+                    onEdit(ts, trimmed);
+                    setFullContent(trimmed);
+                }
+                setEditing(false);
+                globalEditingNoteTs = null;
+                globalEditingTab = null;
+                globalEditTextareaRef = null;
+                globalEditValue = '';
+                globalSetEditValue = null;
+                globalActiveTab = '';
+            };
+            
+            if (scrollContainer && anchorEl) {
+                anchorScroll(scrollContainer, anchorEl, doSave);
+            } else {
+                doSave();
             }
-            setEditing(false);
-            globalEditingNoteTs = null;
-            globalEditingTab = null;
-            globalEditTextareaRef = null;
-            globalEditValue = '';
-            globalSetEditValue = null;
-            globalActiveTab = '';
         };
         
         const handleCancel = () => {
-            setEditing(false);
-            globalEditingNoteTs = null;
-            globalEditingTab = null;
-            globalEditTextareaRef = null;
-            globalEditValue = '';
-            globalSetEditValue = null;
-            globalActiveTab = '';
+            const noteEl = noteItemRef.current;
+            const scrollContainer = noteEl ? noteEl.closest('.note-items') : null;
+            const headerRow = noteEl ? noteEl.querySelector('.note-header-row') : null;
+            const anchorEl = headerRow || noteEl;
+            
+            const doCancel = () => {
+                setEditing(false);
+                globalEditingNoteTs = null;
+                globalEditingTab = null;
+                globalEditTextareaRef = null;
+                globalEditValue = '';
+                globalSetEditValue = null;
+                globalActiveTab = '';
+            };
+            
+            if (scrollContainer && anchorEl) {
+                anchorScroll(scrollContainer, anchorEl, doCancel);
+            } else {
+                doCancel();
+            }
         };
 
         const handleCopyAll = () => {
@@ -476,13 +580,8 @@
                             const img = e.currentTarget;
                             const imageId = img.dataset.imageId;
                             
-                            if (isGif) {
-                                return;
-                            }
-                            
-                            if (img.dataset.hasThumb !== 'true') {
-                                return;
-                            }
+                            if (isGif) return;
+                            if (img.dataset.hasThumb !== 'true') return;
                             
                             handleImageToggle(e, imageId);
                         },
@@ -714,29 +813,32 @@
 
         const handleCollapseToggle = (e) => {
             e.stopPropagation();
+            
+            const btn = e.currentTarget;
+            const noteEl = noteItemRef.current;
+            const scrollContainer = noteEl ? noteEl.closest('.note-items') : null;
+            
+            // 确定锚点元素：优先使用被点击的按钮本身
+            const anchorEl = btn || (noteEl ? noteEl.querySelector('.note-header-row') : null) || noteEl;
+            
             if (currentGuest || isFullscreenColumn) {
-                setLocalCollapsed(prev => prev === null ? !effectiveCollapsed : !prev);
+                if (scrollContainer && anchorEl) {
+                    anchorScroll(scrollContainer, anchorEl, () => {
+                        setLocalCollapsed(prev => prev === null ? !effectiveCollapsed : !prev);
+                    });
+                } else {
+                    setLocalCollapsed(prev => prev === null ? !effectiveCollapsed : !prev);
+                }
                 return;
             }
-            const noteEl = noteItemRef.current;
-            if (noteEl) {
-                const scrollContainer = noteEl.closest('.note-items');
-                if (scrollContainer) {
-                    const noteRect = noteEl.getBoundingClientRect();
-                    const containerRect = scrollContainer.getBoundingClientRect();
-                    const noteTopInContainer = noteRect.top - containerRect.top + scrollContainer.scrollTop;
-                    
+            
+            if (scrollContainer && anchorEl) {
+                anchorScroll(scrollContainer, anchorEl, () => {
                     onToggleCollapse(ts);
-                    
-                    requestAnimationFrame(() => {
-                        requestAnimationFrame(() => {
-                            scrollContainer.scrollTop = noteTopInContainer;
-                        });
-                    });
-                    return;
-                }
+                });
+            } else {
+                onToggleCollapse(ts);
             }
-            onToggleCollapse(ts);
         };
 
         const handleCoverClick = (e) => {
@@ -809,11 +911,12 @@
         }
         
         const isCollapsed = searchTerm ? false : effectiveCollapsed;
-        const noteLength = m ? m.length : 0;
-        const lineCount = m ? m.split('\n').length : 0;
+        const displayContent = fullContent || summaryText;
+        const noteLength = displayContent ? displayContent.length : 0;
+        const lineCount = displayContent ? displayContent.split('\n').length : 0;
         const showFooter = !isFullscreenColumn && !isCollapsed && lineCount > 10;
-        const coverImageId = getCoverImage(m);
-        const plainText = getPlainText(m);
+        const coverImageId = getCoverImage(displayContent);
+        const plainText = getPlainText(displayContent);
         
         const coverExt = coverImageId ? coverImageId.split('.').pop()?.toLowerCase() : null;
         const coverIsGif = coverExt === 'gif';
@@ -898,7 +1001,11 @@
                 )
             :
                 h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` }, 
-                    renderContentWithHighlight(m, false)
+                    isCollapsed 
+                        ? getPlainText(summaryText)
+                        : (loadingFull 
+                            ? h('span', { style: { opacity: 0.5, fontStyle: 'italic' } }, 'Loading...')
+                            : renderContentWithHighlight(displayContent, false))
                 ),
             isCollapsed && !coverImageId && h('div', { className: 'note-collapsed-indicator' }, '\u2026'),
             showFooter && h('div', { className: 'note-footer-bar' },
@@ -990,6 +1097,8 @@
         const dragCounterRef = useRef(0);
         const panelRef = useRef(null);
         const currentOffsetRef = useRef(0);
+        // 记录旧 API 数据中的完整内容缓存
+        const fullContentFallbackRef = useRef({});
         
         useEffect(() => { mRef.current = m; }, [m]);
         useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
@@ -1016,6 +1125,7 @@
             setCurrentOffset(0);
             setThumbMap({});
             setAttNames({});
+            fullContentFallbackRef.current = {};
             
             if (loadNotesAbortControllerRef.current) {
                 loadNotesAbortControllerRef.current.abort();
@@ -1130,14 +1240,28 @@
                     
                     if (e === 'newNote') {
                         shouldAutoScrollRef.current = true;
+                        // SSE 推送的 newNote 包含完整 m，同时设置 s 作为摘要
+                        const noteData = { 
+                            ...data, 
+                            _tab: activeTabRef.current,
+                            s: data.m ? data.m.substring(0, 200) : '',
+                            hasMore: data.m ? data.m.length > 200 : false,
+                            m: data.m
+                        };
                         setNotes(prev => {
                             const exists = prev.some(n => n.ts === data.ts);
                             if (exists) return prev;
-                            return [...prev, { ...data, _tab: activeTabRef.current }];
+                            return [...prev, noteData];
                         });
                         loadTabs();
                     } else if (e === 'updateNote') {
-                        setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, m: data.m, collapsed: data.collapsed } : n));
+                        setNotes(prev => prev.map(n => n.ts === data.ts ? { 
+                            ...n, 
+                            m: data.m, 
+                            s: data.m ? data.m.substring(0, 200) : '',
+                            hasMore: data.m ? data.m.length > 200 : false,
+                            collapsed: data.collapsed 
+                        } : n));
                     } else if (e === 'toggleStar') {
                         setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, starred: data.starred } : n));
                     } else if (e === 'toggleCollapse') {
@@ -1146,6 +1270,7 @@
                         setNotes(prev => prev.filter(n => n.ts !== data.ts));
                         loadTabs();
                     } else if (e === 'tabCleared' && data.tab === activeTabRef.current) {
+                        fullContentFallbackRef.current = {};
                         setNotes([]);
                         setHasMore(false);
                         setCurrentOffset(0);
@@ -1345,8 +1470,8 @@
                 }
 
                 for (const file of files) {
-                    if (file.size > 100 * 1024 * 1024) {
-                        HFS.toast(`File "${file.name}" too large (max 100MB)`, 'error');
+                    if (file.size > 200 * 1024 * 1024) {
+                        HFS.toast(`File "${file.name}" too large (max 200MB)`, 'error');
                         return;
                     }
                 }
@@ -1641,23 +1766,22 @@
             setShowSortButtons(true);
         };
 
-const handleRenameSave = async () => {
-    if (!renamingTab) return;
-    const newName = renameValue.trim();
-    // 修改：允許空名稱以恢復默認，只要與當前顯示名稱不同就發送
-    const currentDisplayName = tabNames[renamingTab] || renamingTab;
-    if (newName !== currentDisplayName) {
-        try {
-            await fetch('/~/api/notes/rename-tab', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tab: renamingTab, newName: newName })
-            });
-        } catch (e) {}
-    }
-    setRenamingTab(null);
-    setShowSortButtons(false);
-};
+        const handleRenameSave = async () => {
+            if (!renamingTab) return;
+            const newName = renameValue.trim();
+            const currentDisplayName = tabNames[renamingTab] || renamingTab;
+            if (newName !== currentDisplayName) {
+                try {
+                    await fetch('/~/api/notes/rename-tab', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tab: renamingTab, newName: newName })
+                    });
+                } catch (e) {}
+            }
+            setRenamingTab(null);
+            setShowSortButtons(false);
+        };
 
         const handleRenameCancel = () => {
             setRenamingTab(null);
@@ -1718,13 +1842,15 @@ const handleRenameSave = async () => {
             }
             
             try {
-                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}`, {
+                // 使用 summary=1 参数只获取摘要
+                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}&summary=1`, {
                     signal: controller.signal
                 });
                 const data = await res.json();
                 
                 const rawNotes = data.notes || {};
                 const sortedKeys = Object.keys(rawNotes).sort();
+                // 保留原始数据结构（s=摘要, hasMore=是否有更多, m=可能存在）
                 const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
                 
                 if (append) {
@@ -1744,7 +1870,7 @@ const handleRenameSave = async () => {
                 return newHasMore;
             } catch (e) {
                 if (e.name === 'AbortError') {
-                    // 请求被取消，忽略
+                    // 请求被取消
                 }
             } finally {
                 if (loadNotesAbortControllerRef.current === controller) {
@@ -1756,7 +1882,7 @@ const handleRenameSave = async () => {
         const loadOtherTabNotes = useCallback(async (tab) => {
             if (!tab) return;
             try {
-                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=0&limit=30`);
+                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=0&limit=30&summary=1`);
                 const data = await res.json();
                 const rawNotes = data.notes || {};
                 const sortedKeys = Object.keys(rawNotes).sort();
@@ -1914,8 +2040,9 @@ const handleRenameSave = async () => {
             let total = 0;
             
             for (const note of displayNotes) {
-                if (!note.m) continue;
-                const matches = (note.m.match(regex) || []).length;
+                const text = note.m || note.s || '';
+                if (!text) continue;
+                const matches = (text.match(regex) || []).length;
                 if (matches > 0) {
                     filtered.push(note);
                     matchMap.set(note, matches);
