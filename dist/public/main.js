@@ -122,12 +122,12 @@
         });
     }
 
-    function getVideoThumbPath(activeTab, fileId) {
+    function getVideoThumbPath(tab, fileId) {
         const ext = fileId.split('.').pop();
         const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
         if (videoExts.includes(ext.toLowerCase())) {
             const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
-            return `/~/notes/thumb/${activeTab}/${baseName}.jpg`;
+            return `/~/notes/thumb/${tab}/${baseName}.jpg`;
         }
         return null;
     }
@@ -139,7 +139,7 @@
     let globalSetEditValue = null;
     let globalActiveTab = '';
 
-    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn }) {
+    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName }) {
         const { u, m, ts, starred, collapsed } = note;
         const { username } = HFS.useSnapState();
         const [editing, setEditing] = useState(false);
@@ -156,6 +156,9 @@
         const isOwner = username && (isAdminUser || username === u);
         const currentGuest = isGuest;
         
+        // 使用 note 实际所属的 tab，而不是全局 activeTab
+        const effectiveTab = tabName || activeTab;
+        
         const effectiveCollapsed = isFullscreenColumn ? true : (localCollapsed !== null ? localCollapsed : (collapsed || false));
         
         // 当activeTab变化时，重置所有本地状态
@@ -170,7 +173,7 @@
                 videoRef.current.style.display = 'none';
             }
             // 清除全局编辑状态
-            if (globalEditingNoteTs === ts && globalEditingTab === activeTab) {
+            if (globalEditingNoteTs === ts && globalEditingTab === effectiveTab) {
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
                 globalEditTextareaRef = null;
@@ -178,7 +181,7 @@
                 globalSetEditValue = null;
                 globalActiveTab = '';
             }
-        }, [activeTab, ts]);
+        }, [activeTab, ts, effectiveTab]);
         
         useEffect(() => {
             if (editing && textareaRef.current) {
@@ -190,13 +193,13 @@
         useEffect(() => {
             if (editing) {
                 globalEditingNoteTs = ts;
-                globalEditingTab = activeTab;
+                globalEditingTab = effectiveTab;
                 globalEditTextareaRef = textareaRef;
                 globalEditValue = editVal;
                 globalSetEditValue = setEditVal;
-                globalActiveTab = activeTab;
+                globalActiveTab = effectiveTab;
             } else {
-                if (globalEditingNoteTs === ts && globalEditingTab === activeTab) {
+                if (globalEditingNoteTs === ts && globalEditingTab === effectiveTab) {
                     globalEditingNoteTs = null;
                     globalEditingTab = null;
                     globalEditTextareaRef = null;
@@ -207,7 +210,7 @@
             }
             
             return () => {
-                if (globalEditingNoteTs === ts && globalEditingTab === activeTab) {
+                if (globalEditingNoteTs === ts && globalEditingTab === effectiveTab) {
                     globalEditingNoteTs = null;
                     globalEditingTab = null;
                     globalEditTextareaRef = null;
@@ -216,7 +219,7 @@
                     globalActiveTab = '';
                 }
             };
-        }, [editing, ts, activeTab, editVal]);
+        }, [editing, ts, effectiveTab, editVal]);
         
         const handleDblClick = () => {
             if (isFullscreenColumn) return;
@@ -224,10 +227,10 @@
                 setEditing(true);
                 setEditVal(m);
                 globalEditingNoteTs = ts;
-                globalEditingTab = activeTab;
+                globalEditingTab = effectiveTab;
                 globalEditValue = m;
                 globalSetEditValue = setEditVal;
-                globalActiveTab = activeTab;
+                globalActiveTab = effectiveTab;
                 
                 setTimeout(() => {
                     inputRef.current?.focus();
@@ -293,10 +296,10 @@
                 for (const file of files) {
                     try {
                         if (file.type.startsWith('image/')) {
-                            const result = await uploadImage(file, activeTab);
+                            const result = await uploadImage(file, effectiveTab);
                             allMarks += `[img:${result.imageId}]`;
                         } else {
-                            const result = await uploadFileToServer(file, activeTab);
+                            const result = await uploadFileToServer(file, effectiveTab);
                             if (result.isVideo) {
                                 allMarks += `[mov:${result.fileId}:${result.name}]`;
                             } else if (result.isAudio) {
@@ -450,8 +453,9 @@
             
             return parts.map((part, i) => {
                 if (part.type === 'image') {
-                    const imgBase = isEditMode ? `/~/notes/img/temp/${activeTab}/` : `/~/notes/img/${activeTab}/`;
-                    const thumbBase = `/~/notes/thumb/${activeTab}/`;
+                    // 使用 effectiveTab（note 实际所属的 tab）而不是全局 activeTab
+                    const imgBase = isEditMode ? `/~/notes/img/temp/${effectiveTab}/` : `/~/notes/img/${effectiveTab}/`;
+                    const thumbBase = `/~/notes/thumb/${effectiveTab}/`;
                     const fullUrl = imgBase + part.imageId;
                     const thumbUrl = thumbBase + part.imageId;
                     const ext = part.imageId.split('.').pop()?.toLowerCase();
@@ -509,13 +513,14 @@
                     });
                 }
                 if (part.type === 'media') {
-                    const movUrl = `/~/notes/mov/${activeTab}/${part.fileId}`;
+                    // 使用 effectiveTab
+                    const movUrl = `/~/notes/mov/${effectiveTab}/${part.fileId}`;
                     const ext = part.fileId.split('.').pop()?.toLowerCase();
                     const audioExts = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg', 'oga'];
                     const isAudio = audioExts.includes(ext);
                     const displayName = part.name || attNames[part.fileId] || part.fileId;
                     const hasThumb = thumbMap && thumbMap[part.fileId];
-                    const videoThumbPath = hasThumb ? getVideoThumbPath(activeTab, part.fileId) : null;
+                    const videoThumbPath = hasThumb ? getVideoThumbPath(effectiveTab, part.fileId) : null;
                     
                     if (isAudio) {
                         return h('div', { 
@@ -676,7 +681,8 @@
                     );
                 }
                 if (part.type === 'attachment') {
-                    const attUrl = `/~/notes/att/${activeTab}/${part.fileId}`;
+                    // 使用 effectiveTab
+                    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
                     const displayName = part.name || attNames[part.fileId] || part.fileId;
                     return h('span', { key: `att-${i}`, className: 'note-inline-att' },
                         h('span', { className: 'note-att-icon' }, '\u2B07'),
@@ -824,9 +830,10 @@
         const coverExt = coverImageId ? coverImageId.split('.').pop()?.toLowerCase() : null;
         const coverIsGif = coverExt === 'gif';
         const coverHasThumb = coverImageId && !coverIsGif && thumbMap && thumbMap[coverImageId];
+        // 使用 effectiveTab
         const coverSrc = coverHasThumb 
-            ? `/~/notes/thumb/${activeTab}/${coverImageId}`
-            : (coverImageId ? `/~/notes/img/${activeTab}/${coverImageId}` : '');
+            ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
+            : (coverImageId ? `/~/notes/img/${effectiveTab}/${coverImageId}` : '');
         
         const canManage = isAdminUser || isOwner;
         
@@ -868,8 +875,8 @@
                     h('div', { className: 'note-cover-image-container' },
                         h('img', {
                             src: coverSrc,
-                            'data-full-src': `/~/notes/img/${activeTab}/${coverImageId}`,
-                            'data-thumb-src': `/~/notes/thumb/${activeTab}/${coverImageId}`,
+                            'data-full-src': `/~/notes/img/${effectiveTab}/${coverImageId}`,
+                            'data-thumb-src': `/~/notes/thumb/${effectiveTab}/${coverImageId}`,
                             'data-has-thumb': coverHasThumb ? 'true' : 'false',
                             'data-is-gif': coverIsGif ? 'true' : 'false',
                             'data-image-id': coverImageId,
@@ -969,6 +976,9 @@
         const [showSortButtons, setShowSortButtons] = useState(false);
         const [isFullscreen, setIsFullscreen] = useState(false);
         const [otherTabData, setOtherTabData] = useState({});
+        const [tabClickCount, setTabClickCount] = useState({});
+        const tabClickTimerRef = useRef({});
+        const tabClickCountRef = useRef({});
         const renameSavePendingRef = useRef(false);
         const isLoadingMoreRef = useRef(false);
         const hasMoreRef = useRef(false);
@@ -1048,6 +1058,13 @@
             setShowSearch(false);
             setStarFilterActive(false);
             setFullscreenStarFilter(false);
+
+            // 清理所有 tab 点击计时器
+Object.keys(tabClickTimerRef.current).forEach(key => {
+    if (key.startsWith('timeout_')) {
+        clearTimeout(tabClickTimerRef.current[key]);
+    }
+});
             
             // 清理全局编辑状态
             globalEditingNoteTs = null;
@@ -2093,22 +2110,72 @@
             setFontSize(14);
         };
 
-        const handleTabClick = (tab) => {
-            if (isFullscreen) {
-                if (tab === activeTab) {
-                    setFullscreenStarFilter(prev => !prev);
-                } else {
-                    setActiveTab(tab);
-                    setFullscreenStarFilter(false);
-                }
+const handleTabClick = (tab) => {
+    if (isFullscreen) {
+        if (tab === activeTab) {
+            setFullscreenStarFilter(prev => !prev);
+        } else {
+            setActiveTab(tab);
+            setFullscreenStarFilter(false);
+        }
+        return;
+    }
+    
+    if (tab === activeTab) {
+        if (isGuest) {
+            // Guest 用户直接切换星标过滤
+            setStarFilterActive(prev => !prev);
+            return;
+        }
+        
+        // 三击检测 - 使用 ref 避免闭包问题
+        const now = Date.now();
+        const lastClickTime = tabClickTimerRef.current[tab] || 0;
+        const currentCount = tabClickCountRef.current[tab] || 0;
+        
+        // 清除之前的超时
+        if (tabClickTimerRef.current[`timeout_${tab}`]) {
+            clearTimeout(tabClickTimerRef.current[`timeout_${tab}`]);
+        }
+        
+        if (now - lastClickTime < 400) {
+            // 在 500ms 内连续点击
+            const newCount = currentCount + 1;
+            tabClickCountRef.current[tab] = newCount;
+            setTabClickCount(prev => ({ ...prev, [tab]: newCount }));
+            
+            if (newCount >= 2) {
+                // 第三次点击（计数从0开始，0->1->2 = 第三次点击）
+                tabClickCountRef.current[tab] = 0;
+                setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
+                tabClickTimerRef.current[tab] = 0;
+                // 触发重命名
+                handleRenameStart(tab);
                 return;
             }
-            if (tab === activeTab) {
+        } else {
+            // 超过 300ms，重新开始计数
+            tabClickCountRef.current[tab] = 0;
+            setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
+        }
+        
+        tabClickTimerRef.current[tab] = now;
+        
+        // 设置超时：400ms 内如果没有第三次点击，执行单击行为
+        tabClickTimerRef.current[`timeout_${tab}`] = setTimeout(() => {
+            if (tabClickCountRef.current[tab] < 2) {
+                // 少于三次点击，执行单击行为（切换星标过滤）
                 setStarFilterActive(prev => !prev);
-            } else {
-                setActiveTab(tab);
             }
-        };
+            tabClickCountRef.current[tab] = 0;
+            setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
+        }, 600);
+        
+    } else {
+        // 切换到其他 tab
+        setActiveTab(tab);
+    }
+};
 
         const dragOverlayContent = isGuest ? 'Please login to upload files' : 'Drop files to upload (multi-file supported)';
 
@@ -2224,17 +2291,11 @@
                                 onKeyDown: handleRenameKeyDown,
                                 onBlur: handleRenameSave,
                                 placeholder: tab
-                            }) : h('button', {
-                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
-                                onClick: () => handleTabClick(tab),
-                                onDoubleClick: (e) => {
-                                    if (isGuest) return;
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    handleRenameStart(tab);
-                                },
-                                title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Double-click to rename')
-                            }, getTabDisplayName(tab))
+}) : h('button', {
+    className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+    onClick: () => handleTabClick(tab),
+    title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
+}, getTabDisplayName(tab))
                         )
                     )
                 ),
@@ -2288,6 +2349,7 @@
                                         activeMatches: null,
                                         noteRef: null,
                                         activeTab: tab,
+                                        tabName: note._tab || tab,
                                         fontSize: fontSize - 1,
                                         thumbMap: tabData.thumbMap,
                                         attNames: tabData.fileNames,
@@ -2327,6 +2389,7 @@
                             activeMatches: getActiveMatchesForNote(note),
                             noteRef: activeMatchRef,
                             activeTab,
+                            tabName: note._tab || activeTab,
                             fontSize,
                             thumbMap,
                             attNames,
