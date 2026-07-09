@@ -1641,21 +1641,23 @@
             setShowSortButtons(true);
         };
 
-        const handleRenameSave = async () => {
-            if (!renamingTab) return;
-            const newName = renameValue.trim();
-            if (newName && newName !== renamingTab) {
-                try {
-                    await fetch('/~/api/notes/rename-tab', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tab: renamingTab, newName: newName })
-                    });
-                } catch (e) {}
-            }
-            setRenamingTab(null);
-            setShowSortButtons(false);
-        };
+const handleRenameSave = async () => {
+    if (!renamingTab) return;
+    const newName = renameValue.trim();
+    // 修改：允許空名稱以恢復默認，只要與當前顯示名稱不同就發送
+    const currentDisplayName = tabNames[renamingTab] || renamingTab;
+    if (newName !== currentDisplayName) {
+        try {
+            await fetch('/~/api/notes/rename-tab', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tab: renamingTab, newName: newName })
+            });
+        } catch (e) {}
+    }
+    setRenamingTab(null);
+    setShowSortButtons(false);
+};
 
         const handleRenameCancel = () => {
             setRenamingTab(null);

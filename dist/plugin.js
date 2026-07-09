@@ -37,7 +37,7 @@ exports.config = {
         type: 'boolean',
         label: 'Auto Export TXT',
         helperText: 'When enabled, automatically export notes as individual TXT files (each note as separate file, organized by tab folders) alongside each backup.',
-        defaultValue: true,
+        defaultValue: false,
         frontend: true
     },
     restrictUsers: {
@@ -130,7 +130,7 @@ exports.init = async api => {
     
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
     
-    // 确保所有目录存在
+    // 確保所有目錄存在
     await fs.mkdir(TABS_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(IMG_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
@@ -146,7 +146,44 @@ exports.init = async api => {
         await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ order: tabs, names: {} }, null, 2))
     }
 
-    // 加强版的文本清理函数
+    // ===== 新增：同步 tabs_map.json 的輔助函數 =====
+    async function syncTabsMapWithConfig() {
+        const tabsMap = await loadTabsMap()
+        const configTabs = getTabs()
+        let needsSave = false
+        
+        // 1. 移除 order 中已不存在的 tab
+        const newOrder = tabsMap.order.filter(t => configTabs.includes(t))
+        if (newOrder.length !== tabsMap.order.length) {
+            tabsMap.order = newOrder
+            needsSave = true
+        }
+        
+        // 2. 添加 config 中有但 order 中沒有的新 tab
+        for (const tab of configTabs) {
+            if (!tabsMap.order.includes(tab)) {
+                tabsMap.order.push(tab)
+                needsSave = true
+            }
+        }
+        
+        // 3. 清理 names 中已不存在的 tab
+        for (const tabName of Object.keys(tabsMap.names)) {
+            if (!configTabs.includes(tabName)) {
+                delete tabsMap.names[tabName]
+                needsSave = true
+            }
+        }
+        
+        if (needsSave) {
+            await saveTabsMap(tabsMap)
+        }
+        
+        return tabsMap
+    }
+    // ===== 結束新增 =====
+
+    // 加強版的文本清理函數
     function sanitizeForDb(text) {
         if (!text || typeof text !== 'string') return ''
         return text
@@ -305,7 +342,7 @@ exports.init = async api => {
         await fs.writeFile(indexPath, JSON.stringify(indexData, null, 2))
     }
 
-    // ===== 笔记内容操作 =====
+    // ===== 筆記內容操作 =====
     
     async function loadNoteContent(tab, ts) {
         try {
@@ -329,7 +366,7 @@ exports.init = async api => {
         await fs.unlink(filePath).catch(() => {})
     }
 
-    // ===== 高级笔记操作 =====
+    // ===== 高級筆記操作 =====
     
     async function getTabNoteCount(tab) {
         const index = await loadTabIndex(tab)
@@ -391,7 +428,7 @@ exports.init = async api => {
         } catch {}
     }
 
-    // ===== 文件存储相关函数 =====
+    // ===== 文件存儲相關函數 =====
     
     async function saveFileName(tab, type, fileId, originalName) {
         const mapPath = getNameMapPath(tab, type)
@@ -676,7 +713,7 @@ exports.init = async api => {
         } catch {}
     }
 
-    // ===== 备份逻辑 =====
+    // ===== 備份邏輯 =====
     
     async function createBackup() {
         const tabs = getTabs()
@@ -730,7 +767,7 @@ exports.init = async api => {
         const exportFiles = []
         const timestamp = getTimestamp()
         
-        // 创建以时间戳命名的导出文件夹
+        // 創建以時間戳命名的導出文件夾
         const exportFolder = path.join(BACKUP_DIR, 'txt_exports', timestamp)
         await fs.mkdir(exportFolder, { recursive: true }).catch(() => {})
         
@@ -741,7 +778,7 @@ exports.init = async api => {
                 
                 if (timestamps.length === 0) continue
                 
-                // 为每个 tab 创建子目录
+                // 為每個 tab 創建子目錄
                 const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
                 const tabExportDir = path.join(exportFolder, safeTabName)
                 await fs.mkdir(tabExportDir, { recursive: true }).catch(() => {})
@@ -753,7 +790,7 @@ exports.init = async api => {
                         const meta = index.notes[ts]
                         const content = await loadNoteContent(tab, ts)
                         if (content !== null) {
-                            // 每条笔记独立一个 txt 文件
+                            // 每條筆記獨立一個 txt 文件
                             const safeTs = ts.replace(/[\\/:*?"<>|]/g, '_')
                             const txtFileName = `${safeTs}.txt`
                             const txtFilePath = path.join(tabExportDir, txtFileName)
@@ -766,21 +803,21 @@ exports.init = async api => {
                             exportedCount++
                         }
                     } catch (noteErr) {
-                        // 单条笔记导出失败不影响其他
+                        // 單條筆記導出失敗不影響其他
                     }
                 }
                 
-                // 如果该 tab 没有导出任何笔记，删除空目录
+                // 如果該 tab 沒有導出任何筆記，刪除空目錄
                 if (exportedCount === 0) {
                     await fs.rmdir(tabExportDir).catch(() => {})
                 }
                 
             } catch (e) {
-                // 单个 tab 导出失败不影响其他
+                // 單個 tab 導出失敗不影響其他
             }
         }
         
-        // 如果整个导出文件夹为空，删除它
+        // 如果整個導出文件夾為空，刪除它
         try {
             const tabDirs = await fs.readdir(exportFolder).catch(() => [])
             if (tabDirs.length === 0) {
@@ -796,7 +833,7 @@ exports.init = async api => {
             const retentionDays = api.getConfig('backupRetentionDays') || 3
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
             
-            // 清理旧的 JSON 镜像备份文件夹
+            // 清理舊的 JSON 鏡像備份文件夾
             const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true }).catch(() => [])
             
             for (const entry of entries) {
@@ -812,7 +849,7 @@ exports.init = async api => {
                 } catch {}
             }
             
-            // 清理旧的 TXT 导出文件夹（以时间戳命名的文件夹）
+            // 清理舊的 TXT 導出文件夾（以時間戳命名的文件夾）
             const txtBaseDir = path.join(BACKUP_DIR, 'txt_exports')
             try {
                 const txtFolders = await fs.readdir(txtBaseDir, { withFileTypes: true }).catch(() => [])
@@ -880,18 +917,26 @@ exports.init = async api => {
 
     setupBackupTimer()
     
+    // ===== 修改：訂閱 tabList 變更，自動同步 _tabs_map.json =====
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
         setupBackupTimer()
         setTimeout(async () => {
             await performScheduledBackup()
         }, 500)
+        // 新增：當 tabList 變更時，同步 _tabs_map.json 並通知前端
+        if (api.getConfig('tabList')) {
+            syncTabsMapWithConfig().then(tabsMap => {
+                api.notifyClient('notes', 'tabsReordered', { tabs: tabsMap.order })
+            }).catch(() => {})
+        }
     })
+    // ===== 結束修改 =====
 
-    // ===== API 处理函数 =====
-    
+    // ===== 修改：getTabInfo - 確保合併 tabsMap.order 和 config tabs =====
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
-        const tabsMap = await loadTabsMap()
+        // 先同步 tabs_map.json，確保新添加的 tab 出現在 order 中
+        const tabsMap = await syncTabsMapWithConfig()
         let tabs = tabsMap.order.length > 0 ? tabsMap.order : getTabs()
 
         if (!username) {
@@ -927,30 +972,36 @@ exports.init = async api => {
         }
         ctx.status = 200
     }
+    // ===== 結束修改 =====
 
-    async function renameTab(ctx) {
-        const username = getCurrentUsername(ctx)
-        if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
-        let body = ctx.state.params || ctx.request?.body || {}
-        const { tab, newName } = body
-        
-        if (!tab || newName === undefined) {
-            ctx.status = 400; return
-        }
-        
-        const tabsMap = await loadTabsMap()
-        if (newName.trim() === '') {
-            delete tabsMap.names[tab]
-        } else {
-            tabsMap.names[tab] = sanitizeForDb(newName.trim())
-        }
-        
-        await saveTabsMap(tabsMap)
-        api.notifyClient('notes', 'tabRenamed', { tab, newName: newName.trim() || tab })
-        ctx.body = { ok: true, tab, newName: newName.trim() || tab }
-        ctx.status = 200
+async function renameTab(ctx) {
+    const username = getCurrentUsername(ctx)
+    if (!username || !isAllowed(username)) { ctx.status = 403; return }
+    
+    let body = ctx.state.params || ctx.request?.body || {}
+    const { tab, newName } = body
+    
+    // 修改：只有當 newName 完全缺失（undefined/null）時才拒絕，空字符串是合法的
+    if (!tab || newName == null) {
+        ctx.status = 400; return
     }
+    
+    const tabsMap = await loadTabsMap()
+    const trimmed = (typeof newName === 'string') ? newName.trim() : ''
+    
+    if (trimmed === '') {
+        delete tabsMap.names[tab]
+    } else {
+        tabsMap.names[tab] = sanitizeForDb(trimmed)
+    }
+    
+    await saveTabsMap(tabsMap)
+    // 發送給前端的 newName：如果是空則發送原始 tab 名（讓前端知道要恢復默認）
+    const notifyName = trimmed || tab
+    api.notifyClient('notes', 'tabRenamed', { tab, newName: notifyName })
+    ctx.body = { ok: true, tab, newName: notifyName }
+    ctx.status = 200
+}
 
     async function listNotes(ctx) {
         const username = getCurrentUsername(ctx)
@@ -2003,7 +2054,7 @@ exports.init = async api => {
             const p = ctx.path
             const method = ctx.method.toUpperCase()
             
-            // 处理缩略图请求
+            // 處理縮略圖請求
             if (p.startsWith('/~/notes/thumb/')) {
                 const parts = p.replace('/~/notes/thumb/', '').split('/')
                 if (parts.length >= 2) {
@@ -2013,7 +2064,7 @@ exports.init = async api => {
                 return
             }
             
-            // 处理图片请求
+            // 處理圖片請求
             if (p.startsWith('/~/notes/img/')) {
                 const pathParts = p.replace('/~/notes/img/', '').split('/')
                 if (pathParts[0] === 'temp' && pathParts.length >= 3) {
@@ -2027,7 +2078,7 @@ exports.init = async api => {
                 return
             }
             
-            // 处理视频/音频请求
+            // 處理視頻/音頻請求
             if (p.startsWith('/~/notes/mov/')) {
                 const parts = p.replace('/~/notes/mov/', '').split('/')
                 if (parts.length >= 2) {
@@ -2037,7 +2088,7 @@ exports.init = async api => {
                 return
             }
             
-            // 处理附件请求
+            // 處理附件請求
             if (p.startsWith('/~/notes/att/')) {
                 const parts = p.replace('/~/notes/att/', '').split('/')
                 if (parts.length >= 2) {
@@ -2047,7 +2098,7 @@ exports.init = async api => {
                 return
             }
             
-            // 处理 API 请求
+            // 處理 API 請求
             if (!p.startsWith(API_BASE)) return
             
             if (p === `${API_BASE}check` && method === 'GET') { await checkAccess(ctx); return }
