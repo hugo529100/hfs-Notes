@@ -1,5 +1,4 @@
 "use strict"; {
-    const MAX_NOTE_LEN = 2000;
     const PAGE_SIZE = 10;
     const { h } = HFS;
     const { useState, useEffect, useRef, useMemo, useCallback } = HFS.React;
@@ -156,23 +155,19 @@
         const isOwner = username && (isAdminUser || username === u);
         const currentGuest = isGuest;
         
-        // 使用 note 实际所属的 tab，而不是全局 activeTab
         const effectiveTab = tabName || activeTab;
         
         const effectiveCollapsed = isFullscreenColumn ? true : (localCollapsed !== null ? localCollapsed : (collapsed || false));
         
-        // 当activeTab变化时，重置所有本地状态
         useEffect(() => {
             setEditing(false);
             setLocalCollapsed(null);
             setImageViewMode({});
-            // 重置视频播放状态
             setVideoPlaying(false);
             if (videoRef.current) {
                 videoRef.current.pause();
                 videoRef.current.style.display = 'none';
             }
-            // 清除全局编辑状态
             if (globalEditingNoteTs === ts && globalEditingTab === effectiveTab) {
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
@@ -453,7 +448,6 @@
             
             return parts.map((part, i) => {
                 if (part.type === 'image') {
-                    // 使用 effectiveTab（note 实际所属的 tab）而不是全局 activeTab
                     const imgBase = isEditMode ? `/~/notes/img/temp/${effectiveTab}/` : `/~/notes/img/${effectiveTab}/`;
                     const thumbBase = `/~/notes/thumb/${effectiveTab}/`;
                     const fullUrl = imgBase + part.imageId;
@@ -513,7 +507,6 @@
                     });
                 }
                 if (part.type === 'media') {
-                    // 使用 effectiveTab
                     const movUrl = `/~/notes/mov/${effectiveTab}/${part.fileId}`;
                     const ext = part.fileId.split('.').pop()?.toLowerCase();
                     const audioExts = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg', 'oga'];
@@ -681,7 +674,6 @@
                     );
                 }
                 if (part.type === 'attachment') {
-                    // 使用 effectiveTab
                     const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
                     const displayName = part.name || attNames[part.fileId] || part.fileId;
                     return h('span', { key: `att-${i}`, className: 'note-inline-att' },
@@ -775,10 +767,6 @@
                         h('span', { className: 'note-author' }, ' - ' + (u || 'Guest'))
                     ),
                     h('div', { className: 'note-edit-actions' },
-                        h('span', { 
-                            className: 'note-edit-charcount',
-                            style: { color: editVal.length >= MAX_NOTE_LEN * 0.9 ? '#fe5757' : undefined }
-                        }, `${editVal.length}/${MAX_NOTE_LEN}`),
                         !currentGuest && h('button', { 
                             className: 'note-img-upload-btn', 
                             onClick: handleEditUpload,
@@ -830,7 +818,6 @@
         const coverExt = coverImageId ? coverImageId.split('.').pop()?.toLowerCase() : null;
         const coverIsGif = coverExt === 'gif';
         const coverHasThumb = coverImageId && !coverIsGif && thumbMap && thumbMap[coverImageId];
-        // 使用 effectiveTab
         const coverSrc = coverHasThumb 
             ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
             : (coverImageId ? `/~/notes/img/${effectiveTab}/${coverImageId}` : '');
@@ -979,7 +966,6 @@
         const [tabClickCount, setTabClickCount] = useState({});
         const tabClickTimerRef = useRef({});
         const tabClickCountRef = useRef({});
-        const renameSavePendingRef = useRef(false);
         const isLoadingMoreRef = useRef(false);
         const hasMoreRef = useRef(false);
         const scrollRestoreRef = useRef(0);
@@ -1022,51 +1008,42 @@
             } catch {}
         }, [m]);
 
-        // 切换tab时清理上一个tab的内容
         useEffect(() => {
             if (!activeTab) return;
             
-            // 清理旧的notes数据
             setNotes([]);
             setHasMore(false);
             setCurrentOffset(0);
             setThumbMap({});
             setAttNames({});
             
-            // 取消正在进行的加载请求
             if (loadNotesAbortControllerRef.current) {
                 loadNotesAbortControllerRef.current.abort();
                 loadNotesAbortControllerRef.current = null;
             }
             
-            // 断开旧的observer
             if (observerRef.current) {
                 observerRef.current.disconnect();
                 observerRef.current = null;
             }
             
-            // 清理其他tab缓存数据
             setOtherTabData({});
             
-            // 重置滚动
             if (listRef.current) {
                 listRef.current.scrollTop = 0;
             }
             
-            // 重置搜索
             setSearchTerm('');
             setShowSearch(false);
             setStarFilterActive(false);
             setFullscreenStarFilter(false);
 
-            // 清理所有 tab 点击计时器
-Object.keys(tabClickTimerRef.current).forEach(key => {
-    if (key.startsWith('timeout_')) {
-        clearTimeout(tabClickTimerRef.current[key]);
-    }
-});
+            Object.keys(tabClickTimerRef.current).forEach(key => {
+                if (key.startsWith('timeout_')) {
+                    clearTimeout(tabClickTimerRef.current[key]);
+                }
+            });
             
-            // 清理全局编辑状态
             globalEditingNoteTs = null;
             globalEditingTab = null;
             globalEditTextareaRef = null;
@@ -1074,25 +1051,20 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
             globalSetEditValue = null;
             globalActiveTab = '';
             
-            // 保存当前tab到localStorage
             try {
                 if (activeTab) {
                     localStorage.setItem(CACHE_ACTIVE_TAB, activeTab);
                 }
             } catch {}
             
-            // 重置滚动标记
             shouldAutoScrollRef.current = true;
             
-            // 加载新tab的数据
             loadNotes(activeTab, false);
             
-            // 设置SSE监听
             setupSSE(activeTab);
             
         }, [activeTab]);
 
-        // 清理函数：组件卸载时清理所有资源
         useEffect(() => {
             return () => {
                 if (observerRef.current) {
@@ -1111,7 +1083,6 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
                     document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
                     fullscreenChangeHandlerRef.current = null;
                 }
-                // 清理全局状态
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
                 globalEditTextareaRef = null;
@@ -1578,15 +1549,6 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
             }
         }, []);
 
-        const tabUsagePercent = useMemo(() => {
-            if (!activeTab || !tabCounts[activeTab]) return 0;
-            return Math.min(Math.round((tabCounts[activeTab] / 500) * 100), 100);
-        }, [activeTab, tabCounts]);
-
-        const isOverLimit = useMemo(() => {
-            return (tabCounts[activeTab] || 0) >= 500;
-        }, [activeTab, tabCounts]);
-
         const sanitizeText = useCallback((text) => {
             if (!text) return '';
             return text
@@ -1600,38 +1562,7 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
                 .normalize('NFC');
         }, []);
 
-        const sendChunks = useCallback(async (text, tab) => {
-            const sanitized = sanitizeText(text);
-            const chunks = [];
-            let remaining = sanitized;
-            while (remaining.length > 0) {
-                chunks.push(remaining.slice(0, MAX_NOTE_LEN));
-                remaining = remaining.slice(MAX_NOTE_LEN);
-            }
-            
-            for (let i = 0; i < chunks.length; i++) {
-                const res = await fetch('/~/api/notes/add', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ m: chunks[i], tab, collapsed: true })
-                });
-                if (!res.ok) {
-                    if (res.status === 429) HFS.toast('Please wait before adding another note', 'error');
-                    if (res.status === 400) HFS.toast('Storage full or invalid input', 'error');
-                    throw new Error('Send failed');
-                }
-                if (i < chunks.length - 1) {
-                    await new Promise(r => setTimeout(r, 250));
-                }
-            }
-        }, [sanitizeText]);
-
         const handleSubmit = useCallback(() => {
-            if (isOverLimit) {
-                HFS.toast('Storage full - please delete old notes first', 'error');
-                return;
-            }
-            
             const currentM = mRef.current;
             const currentTab = activeTabRef.current;
             const trim = currentM.trim();
@@ -1642,23 +1573,19 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
                     const sanitizedM = sanitizeText(trim);
                     if (!sanitizedM) return;
                     
-                    if (sanitizedM.length > MAX_NOTE_LEN) {
-                        await sendChunks(sanitizedM, currentTab);
-                        HFS.toast(`Content split into ${Math.ceil(sanitizedM.length / MAX_NOTE_LEN)} notes (auto-collapsed)`, 'info');
-                    } else {
-                        const res = await fetch('/~/api/notes/add', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ m: sanitizedM, tab: currentTab })
-                        });
-                        if (!res.ok) {
-                            if (res.status === 429) HFS.toast('Please wait before adding another note', 'error');
-                            if (res.status === 400) HFS.toast('Storage full or invalid input', 'error');
-                            return;
-                        }
-                        const data = await res.json().catch(() => {});
-                        if (data && data.warning) setStorageWarning(true);
+                    const res = await fetch('/~/api/notes/add', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ m: sanitizedM, tab: currentTab })
+                    });
+                    if (!res.ok) {
+                        if (res.status === 429) HFS.toast('Please wait before adding another note', 'error');
+                        if (res.status === 400) HFS.toast('Invalid input', 'error');
+                        return;
                     }
+                    const data = await res.json().catch(() => {});
+                    if (data && data.warning) setStorageWarning(true);
+                    
                     sm('');
                     try { localStorage.removeItem(CACHE_INPUT_TEXT); } catch {}
                     if (inputRef.current) {
@@ -1669,7 +1596,7 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
                 } catch (e) {}
             };
             doSend();
-        }, [sendChunks, isOverLimit, sanitizeText]);
+        }, [sanitizeText]);
 
         const handleEdit = useCallback((ts, newText) => {
             const doEdit = async () => {
@@ -1677,42 +1604,13 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
                     const sanitizedText = sanitizeText(newText);
                     if (!sanitizedText) return;
                     
-                    if (sanitizedText.length > MAX_NOTE_LEN) {
-                        const firstChunk = sanitizedText.slice(0, MAX_NOTE_LEN);
-                        const restChunks = [];
-                        let remaining = sanitizedText.slice(MAX_NOTE_LEN);
-                        while (remaining.length > 0) {
-                            restChunks.push(remaining.slice(0, MAX_NOTE_LEN));
-                            remaining = remaining.slice(MAX_NOTE_LEN);
-                        }
-                        
-                        const res = await fetch('/~/api/notes/update', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ ts, tab: activeTab, m: firstChunk })
-                        });
-                        if (!res.ok) {
-                            HFS.toast('Failed to update note', 'error');
-                            return;
-                        }
-                        
-                        for (const chunk of restChunks) {
-                            await fetch('/~/api/notes/add', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ m: chunk, tab: activeTab, collapsed: true })
-                            });
-                        }
-                        HFS.toast(`Content split: first part updated, ${restChunks.length} new notes added (auto-collapsed)`, 'info');
-                    } else {
-                        const res = await fetch('/~/api/notes/update', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ ts, tab: activeTab, m: sanitizedText })
-                        });
-                        if (!res.ok) {
-                            HFS.toast('Failed to update note', 'error');
-                        }
+                    const res = await fetch('/~/api/notes/update', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ts, tab: activeTab, m: sanitizedText })
+                    });
+                    if (!res.ok) {
+                        HFS.toast('Failed to update note', 'error');
                     }
                 } catch (e) {}
             };
@@ -1781,18 +1679,19 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
             fetch('/~/api/notes/tabs')
                 .then(r => r.json())
                 .then(data => {
-                    setTabs(data.tabs || []);
+                    const tabsList = data.tabs || [];
+                    setTabs(tabsList);
                     setTabCounts(data.counts || {});
                     setStorageWarning(data.warning || false);
                     setTabNames(data.tabNames || {});
                     const cachedTab = localStorage.getItem(CACHE_ACTIVE_TAB);
-                    if (cachedTab && data.tabs?.includes(cachedTab)) {
+                    if (cachedTab && tabsList.includes(cachedTab)) {
                         setActiveTab(cachedTab);
-                    } else if (data.tabs?.length > 0 && !activeTabRef.current) {
-                        setActiveTab(data.tabs[0]);
+                    } else if (tabsList.length > 0 && !activeTabRef.current) {
+                        setActiveTab(tabsList[0]);
                     }
-                    if (data.tabs?.length > 0 && !data.tabs.includes(activeTabRef.current)) {
-                        setActiveTab(prev => data.tabs.includes(prev) ? prev : data.tabs[0]);
+                    if (tabsList.length > 0 && !tabsList.includes(activeTabRef.current)) {
+                        setActiveTab(prev => tabsList.includes(prev) ? prev : tabsList[0]);
                     }
                     if (data.isGuest !== undefined) {
                         isGuest = data.isGuest;
@@ -1804,7 +1703,6 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
         const loadNotes = useCallback(async (tab, append = false) => {
             if (!tab) return;
             
-            // 取消之前的请求
             if (loadNotesAbortControllerRef.current) {
                 loadNotesAbortControllerRef.current.abort();
             }
@@ -1838,15 +1736,13 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
                 }
                 const newHasMore = data.hasMore || false;
                 setHasMore(newHasMore);
-                setCurrentOffset(offset + PAGE_SIZE);
+                setCurrentOffset(offset + notesWithTab.length);
                 setThumbMap(data.thumbMap || {});
                 setAttNames(data.fileNames || {});
                 return newHasMore;
             } catch (e) {
                 if (e.name === 'AbortError') {
                     // 请求被取消，忽略
-                } else {
-                    throw e;
                 }
             } finally {
                 if (loadNotesAbortControllerRef.current === controller) {
@@ -1985,7 +1881,6 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
             };
         }, []);
 
-        // 当notes变化时自动滚动到底部
         useEffect(() => {
             if (!listRef.current) return;
             if (!shouldAutoScrollRef.current) return;
@@ -2110,72 +2005,62 @@ Object.keys(tabClickTimerRef.current).forEach(key => {
             setFontSize(14);
         };
 
-const handleTabClick = (tab) => {
-    if (isFullscreen) {
-        if (tab === activeTab) {
-            setFullscreenStarFilter(prev => !prev);
-        } else {
-            setActiveTab(tab);
-            setFullscreenStarFilter(false);
-        }
-        return;
-    }
-    
-    if (tab === activeTab) {
-        if (isGuest) {
-            // Guest 用户直接切换星标过滤
-            setStarFilterActive(prev => !prev);
-            return;
-        }
-        
-        // 三击检测 - 使用 ref 避免闭包问题
-        const now = Date.now();
-        const lastClickTime = tabClickTimerRef.current[tab] || 0;
-        const currentCount = tabClickCountRef.current[tab] || 0;
-        
-        // 清除之前的超时
-        if (tabClickTimerRef.current[`timeout_${tab}`]) {
-            clearTimeout(tabClickTimerRef.current[`timeout_${tab}`]);
-        }
-        
-        if (now - lastClickTime < 400) {
-            // 在 500ms 内连续点击
-            const newCount = currentCount + 1;
-            tabClickCountRef.current[tab] = newCount;
-            setTabClickCount(prev => ({ ...prev, [tab]: newCount }));
-            
-            if (newCount >= 2) {
-                // 第三次点击（计数从0开始，0->1->2 = 第三次点击）
-                tabClickCountRef.current[tab] = 0;
-                setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
-                tabClickTimerRef.current[tab] = 0;
-                // 触发重命名
-                handleRenameStart(tab);
+        const handleTabClick = (tab) => {
+            if (isFullscreen) {
+                if (tab === activeTab) {
+                    setFullscreenStarFilter(prev => !prev);
+                } else {
+                    setActiveTab(tab);
+                    setFullscreenStarFilter(false);
+                }
                 return;
             }
-        } else {
-            // 超过 300ms，重新开始计数
-            tabClickCountRef.current[tab] = 0;
-            setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
-        }
-        
-        tabClickTimerRef.current[tab] = now;
-        
-        // 设置超时：400ms 内如果没有第三次点击，执行单击行为
-        tabClickTimerRef.current[`timeout_${tab}`] = setTimeout(() => {
-            if (tabClickCountRef.current[tab] < 2) {
-                // 少于三次点击，执行单击行为（切换星标过滤）
-                setStarFilterActive(prev => !prev);
+            
+            if (tab === activeTab) {
+                if (isGuest) {
+                    setStarFilterActive(prev => !prev);
+                    return;
+                }
+                
+                const now = Date.now();
+                const lastClickTime = tabClickTimerRef.current[tab] || 0;
+                const currentCount = tabClickCountRef.current[tab] || 0;
+                
+                if (tabClickTimerRef.current[`timeout_${tab}`]) {
+                    clearTimeout(tabClickTimerRef.current[`timeout_${tab}`]);
+                }
+                
+                if (now - lastClickTime < 400) {
+                    const newCount = currentCount + 1;
+                    tabClickCountRef.current[tab] = newCount;
+                    setTabClickCount(prev => ({ ...prev, [tab]: newCount }));
+                    
+                    if (newCount >= 2) {
+                        tabClickCountRef.current[tab] = 0;
+                        setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
+                        tabClickTimerRef.current[tab] = 0;
+                        handleRenameStart(tab);
+                        return;
+                    }
+                } else {
+                    tabClickCountRef.current[tab] = 0;
+                    setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
+                }
+                
+                tabClickTimerRef.current[tab] = now;
+                
+                tabClickTimerRef.current[`timeout_${tab}`] = setTimeout(() => {
+                    if (tabClickCountRef.current[tab] < 2) {
+                        setStarFilterActive(prev => !prev);
+                    }
+                    tabClickCountRef.current[tab] = 0;
+                    setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
+                }, 600);
+                
+            } else {
+                setActiveTab(tab);
             }
-            tabClickCountRef.current[tab] = 0;
-            setTabClickCount(prev => ({ ...prev, [tab]: 0 }));
-        }, 600);
-        
-    } else {
-        // 切换到其他 tab
-        setActiveTab(tab);
-    }
-};
+        };
 
         const dragOverlayContent = isGuest ? 'Please login to upload files' : 'Drop files to upload (multi-file supported)';
 
@@ -2225,14 +2110,6 @@ const handleTabClick = (tab) => {
                     searchTerm && h('span', { className: 'note-header-stats' },
                         `${filteredNotes.length} notes / ${totalMatches} matches`
                     ),
-                    !isFullscreen && h('span', {
-                        className: 'note-header-charcount',
-                        style: { color: m.length >= MAX_NOTE_LEN * 0.9 ? '#fe5757' : undefined }
-                    }, `${m.length}/${MAX_NOTE_LEN}`),
-                    h('span', { 
-                        className: `note-header-usage ${tabUsagePercent >= 80 ? 'note-usage-warning' : ''} ${isOverLimit ? 'note-usage-full' : ''}`,
-                        title: isOverLimit ? 'Tab storage is full!' : (tabUsagePercent >= 80 ? 'Tab storage is nearly full!' : '')
-                    }, ` - ${tabUsagePercent}%`),
                     h('button', { className: 'note-close-btn', onClick: handleClose }, '\u00D7')
                 )
             ),
@@ -2291,11 +2168,11 @@ const handleTabClick = (tab) => {
                                 onKeyDown: handleRenameKeyDown,
                                 onBlur: handleRenameSave,
                                 placeholder: tab
-}) : h('button', {
-    className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
-    onClick: () => handleTabClick(tab),
-    title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
-}, getTabDisplayName(tab))
+                            }) : h('button', {
+                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+                                onClick: () => handleTabClick(tab),
+                                title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
+                            }, getTabDisplayName(tab))
                         )
                     )
                 ),
@@ -2364,18 +2241,12 @@ const handleTabClick = (tab) => {
                 h('div', { className: 'note-items', ref: listRef, style: { overscrollBehavior: 'contain' } },
                     h('div', { 
                         ref: sentinelRef,
-                        className: 'note-loading-sentinel',
+                        className: 'note-loading-indicator note-loading-clickable',
                         key: 'load-more-sentinel',
                         style: { display: (hasMore && !searchTerm) ? 'block' : 'none' },
                         onClick: doLoadMore
                     }, loadingMore ? 'Loading older notes...' : '\u25B2 Load older notes'),
                     
-                    storageWarning && h('div', { className: 'note-warning-banner' },
-                        '\u26A0 Storage limit approaching. Older notes auto-removed at limit.'
-                    ),
-                    isOverLimit && h('div', { className: 'note-warning-banner note-full-banner' },
-                        '\u26A0 Storage full. Please delete some notes before adding new ones.'
-                    ),
                     starFilterActive && h('div', { className: 'note-star-filter-banner' }, '\u2605 Showing starred notes only'),
                     filteredNotes.length > 0
                         ? filteredNotes.map((note, i) => h(NoteItem, { 
@@ -2413,19 +2284,17 @@ const handleTabClick = (tab) => {
                         e.target.style.height = 'auto';
                         e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
                     },
-                    placeholder: isOverLimit ? 'Storage full - delete old notes first' : (isGuest ? 'Shift+Enter to send (Login to upload files)' : 'Shift+Enter send | Long press Send to upload | Drag & drop files'),
-                    className: `note-input ${isOverLimit ? 'note-input-disabled' : ''}`,
-                    rows: 1,
-                    disabled: isOverLimit
+                    placeholder: isGuest ? 'Shift+Enter to send (Login to upload files)' : 'Shift+Enter send | Long press Send to upload | Drag & drop files',
+                    className: 'note-input',
+                    rows: 1
                 }),
                 h('button', { 
-                    className: `note-send-btn ${isOverLimit ? 'note-send-btn-disabled' : ''}`, 
-                    onClick: isOverLimit ? null : handleSubmit,
+                    className: 'note-send-btn', 
+                    onClick: handleSubmit,
                     type: 'button',
                     ref: sendBtnRef,
-                    disabled: isOverLimit,
-                    title: isOverLimit ? 'Storage full - please delete old notes' : (isGuest ? 'Send' : 'Send (long press to upload files)')
-                }, isOverLimit ? 'Full' : 'Send')
+                    title: isGuest ? 'Send' : 'Send (long press to upload files)'
+                }, 'Send')
             )
         );
     }

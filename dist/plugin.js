@@ -1,4 +1,4 @@
-exports.version = 2.3
+exports.version = 2.4
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, and TXT export."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -36,7 +36,7 @@ exports.config = {
     autoExportTxt: {
         type: 'boolean',
         label: 'Auto Export TXT',
-        helperText: 'When enabled, automatically export notes as TXT files (timestamp + content only) alongside each backup. Same filename will be overwritten.',
+        helperText: 'When enabled, automatically export notes as individual TXT files (each note as separate file, organized by tab folders) alongside each backup.',
         defaultValue: true,
         frontend: true
     },
@@ -107,26 +107,23 @@ exports.init = async api => {
     
     const API_BASE = `${api.Const.API_URI}notes/`
     const ADMIN_API = `${API_BASE}admin/`
+    
+    const TABS_DIR = path.join(storage, 'tabs')
     const IMG_BASE_DIR = path.join(storage, 'img')
     const MOV_BASE_DIR = path.join(storage, 'mov')
     const ATT_BASE_DIR = path.join(storage, 'att')
     const THUMB_BASE_DIR = path.join(storage, 'thumb')
     const BACKUP_DIR = path.join(storage, 'backup')
-    const TXT_EXPORT_DIR = path.join(BACKUP_DIR, 'txt_exports')
+    const TABS_MAP_FILE = path.join(TABS_DIR, '_tabs_map.json')
 
-    const MAX_NOTE_LEN = 2000
-    const RETAIN_NOTES = 500
     const SPAM_DELAY = 200
     const MAX_STORAGE_WARNING = 400
-    const AUTO_COLLAPSE_LINES = 100
     const MAX_IMG_SIZE = 40 * 1024 * 1024
     const MAX_FILE_SIZE = 100 * 1024 * 1024
     const TEMP_IMG_TTL = 60 * 60 * 1000
     const THUMB_QUALITY = 85
-    const THUMB_MIN_SIZE = 100 * 1024
-    const PAGE_SIZE = 30
+    const PAGE_SIZE = 10
 
-    const dbs = new Map()
     let backupTimer = null
     let tempCleanupTimer = null
     let isBackupRunning = false
@@ -134,14 +131,22 @@ exports.init = async api => {
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
     
     // 确保所有目录存在
+    await fs.mkdir(TABS_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(IMG_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(ATT_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
-    await fs.mkdir(TXT_EXPORT_DIR, { recursive: true }).catch(() => {})
 
-    // 加强版的文本清理函数，移除所有可能引起数据库崩溃的特殊字符
+    // 初始化 tabs_map.json
+    try {
+        await fs.stat(TABS_MAP_FILE)
+    } catch {
+        const tabs = getTabs()
+        await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ order: tabs, names: {} }, null, 2))
+    }
+
+    // 加强版的文本清理函数
     function sanitizeForDb(text) {
         if (!text || typeof text !== 'string') return ''
         return text
@@ -159,6 +164,7 @@ exports.init = async api => {
     }
     
     function getTabPublicConfig(tab) {
+        if (!tab) return false
         const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
         const found = list.find(t => t.name === tab)
         return found ? (found.publicNote === true) : false
@@ -173,15 +179,6 @@ exports.init = async api => {
         if (!api.getConfig('restrictUsers')) return true
         const allowed = api.getConfig('allowedUsers') || []
         return allowed.includes(username)
-    }
-    
-    function getDb(tab) {
-        if (!dbs.has(tab)) {
-            const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
-            const db = api.openDb(`notes_${safeTabName}`, { rewriteLater: true })
-            dbs.set(tab, db)
-        }
-        return dbs.get(tab)
     }
 
     function getTabs() {
@@ -201,7 +198,8 @@ exports.init = async api => {
         const d = String(now.getDate()).padStart(2, '0')
         const h = String(now.getHours()).padStart(2, '0')
         const min = String(now.getMinutes()).padStart(2, '0')
-        return `${y}${m}${d}_${h}${min}`
+        const s = String(now.getSeconds()).padStart(2, '0')
+        return `${y}${m}${d}_${h}${min}${s}`
     }
 
     function formatBytes(bytes) {
@@ -223,6 +221,20 @@ exports.init = async api => {
         const rand = crypto.randomBytes(3).toString('hex')
         const ext = path.extname(originalName) || '.jpg'
         return `${dateStr}_${rand}${ext}`
+    }
+
+    function getTabDir(tab) {
+        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+        return path.join(TABS_DIR, safeTab)
+    }
+
+    function getTabIndexPath(tab) {
+        return path.join(getTabDir(tab), '_index.json')
+    }
+
+    function getNoteFilePath(tab, ts) {
+        const safeTs = ts.replace(/[\\/:*?"<>|]/g, '_')
+        return path.join(getTabDir(tab), `${safeTs}.json`)
     }
 
     function getTabImgDir(tab) {
@@ -254,6 +266,133 @@ exports.init = async api => {
         return path.join(dir, '.filenames')
     }
 
+    // ===== Tab 映射表操作 =====
+    
+    async function loadTabsMap() {
+        try {
+            const data = await fs.readFile(TABS_MAP_FILE, 'utf-8')
+            const parsed = JSON.parse(data)
+            return {
+                order: parsed.order || getTabs(),
+                names: parsed.names || {}
+            }
+        } catch {
+            const tabs = getTabs()
+            return { order: tabs, names: {} }
+        }
+    }
+
+    async function saveTabsMap(mapData) {
+        await fs.writeFile(TABS_MAP_FILE, JSON.stringify(mapData, null, 2))
+    }
+
+    // ===== Tab 索引操作 =====
+    
+    async function loadTabIndex(tab) {
+        try {
+            const indexPath = getTabIndexPath(tab)
+            const data = await fs.readFile(indexPath, 'utf-8')
+            return JSON.parse(data)
+        } catch {
+            return { notes: {} }
+        }
+    }
+
+    async function saveTabIndex(tab, indexData) {
+        const dir = getTabDir(tab)
+        await fs.mkdir(dir, { recursive: true }).catch(() => {})
+        const indexPath = getTabIndexPath(tab)
+        await fs.writeFile(indexPath, JSON.stringify(indexData, null, 2))
+    }
+
+    // ===== 笔记内容操作 =====
+    
+    async function loadNoteContent(tab, ts) {
+        try {
+            const filePath = getNoteFilePath(tab, ts)
+            const data = await fs.readFile(filePath, 'utf-8')
+            return data
+        } catch {
+            return null
+        }
+    }
+
+    async function saveNoteContent(tab, ts, content) {
+        const dir = getTabDir(tab)
+        await fs.mkdir(dir, { recursive: true }).catch(() => {})
+        const filePath = getNoteFilePath(tab, ts)
+        await fs.writeFile(filePath, content, 'utf-8')
+    }
+
+    async function deleteNoteFile(tab, ts) {
+        const filePath = getNoteFilePath(tab, ts)
+        await fs.unlink(filePath).catch(() => {})
+    }
+
+    // ===== 高级笔记操作 =====
+    
+    async function getTabNoteCount(tab) {
+        const index = await loadTabIndex(tab)
+        return Object.keys(index.notes).length
+    }
+
+    async function addNoteToTab(tab, ts, noteData) {
+        const index = await loadTabIndex(tab)
+        index.notes[ts] = {
+            u: noteData.u,
+            starred: noteData.starred || false,
+            collapsed: noteData.collapsed || false
+        }
+        await saveTabIndex(tab, index)
+        await saveNoteContent(tab, ts, noteData.m)
+    }
+
+    async function updateNoteInTab(tab, ts, noteData) {
+        const index = await loadTabIndex(tab)
+        if (!index.notes[ts]) return false
+        if (noteData.m !== undefined) {
+            await saveNoteContent(tab, ts, noteData.m)
+        }
+        if (noteData.u !== undefined) index.notes[ts].u = noteData.u
+        if (noteData.starred !== undefined) index.notes[ts].starred = noteData.starred
+        if (noteData.collapsed !== undefined) index.notes[ts].collapsed = noteData.collapsed
+        await saveTabIndex(tab, index)
+        return true
+    }
+
+    async function deleteNoteFromTab(tab, ts) {
+        const index = await loadTabIndex(tab)
+        if (!index.notes[ts]) return null
+        const noteMeta = index.notes[ts]
+        delete index.notes[ts]
+        await saveTabIndex(tab, index)
+        await deleteNoteFile(tab, ts)
+        return noteMeta
+    }
+
+    async function getNoteWithContent(tab, ts) {
+        const index = await loadTabIndex(tab)
+        const meta = index.notes[ts]
+        if (!meta) return null
+        const content = await loadNoteContent(tab, ts)
+        if (content === null) return null
+        return {
+            m: content,
+            u: meta.u,
+            starred: meta.starred || false,
+            collapsed: meta.collapsed || false
+        }
+    }
+
+    async function clearTabData(tab) {
+        const dir = getTabDir(tab)
+        try {
+            await fs.rm(dir, { recursive: true, force: true })
+        } catch {}
+    }
+
+    // ===== 文件存储相关函数 =====
+    
     async function saveFileName(tab, type, fileId, originalName) {
         const mapPath = getNameMapPath(tab, type)
         const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
@@ -331,13 +470,11 @@ exports.init = async api => {
         return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
     }
 
-    // 使用 sharp 插件生成缩略图（参考第三方插件）
     async function generateThumbnailWithSharp(imageBuffer, outputPath) {
         try {
             const quality = api.getConfig('thumbQuality') || THUMB_QUALITY
             const pixels = api.getConfig('thumbPixels') || 400
             
-            // 尝试通过 customApiCall 调用 sharp 插件
             const sharpResults = api.customApiCall('sharp', imageBuffer)
             const sharp = sharpResults && sharpResults[0]
             
@@ -350,7 +487,6 @@ exports.init = async api => {
                 return true
             }
             
-            // 如果 sharp 插件不可用，尝试直接 require
             try {
                 const sharpModule = api.require('sharp')
                 if (sharpModule) {
@@ -361,15 +497,11 @@ exports.init = async api => {
                         .toFile(outputPath)
                     return true
                 }
-            } catch (requireErr) {
-                // sharp 不可用
-            }
+            } catch (requireErr) {}
             
-            // 如果都不行，保存原始图片作为缩略图（降级方案）
             await fs.writeFile(outputPath, imageBuffer)
             return true
         } catch (e) {
-            // 降级方案：直接保存原始图片
             try {
                 await fs.writeFile(outputPath, imageBuffer)
                 return true
@@ -379,16 +511,12 @@ exports.init = async api => {
         }
     }
 
-    // 原有的 generateThumbnail 保留作为备用
     async function generateThumbnail(imageBuffer, outputPath) {
         try {
-            // 首先尝试使用 sharp 插件
             const useSharp = api.getConfig('useSharpPlugin') !== false
             if (useSharp) {
                 return await generateThumbnailWithSharp(imageBuffer, outputPath)
             }
-            
-            // 否则直接保存原图
             await fs.writeFile(outputPath, imageBuffer)
             return true
         } catch (e) {
@@ -396,7 +524,6 @@ exports.init = async api => {
         }
     }
 
-    // 视频缩略图提取（修复版）
     async function extractVideoThumbnail(videoPath, tab, fileId) {
         try {
             const ffmpegPath = api.getConfig('ffmpeg_path') || 'ffmpeg'
@@ -415,28 +542,19 @@ exports.init = async api => {
             const thumbId = baseName + '.jpg'
             const thumbPath = path.join(thumbDir, thumbId)
             
-            // 检查是否已存在
             try {
                 await fs.stat(thumbPath)
                 return true
             } catch {}
             
-            // 使用 ffmpeg 提取缩略图
             return new Promise((resolve) => {
-                // 使用多个时间点尝试，避免黑帧
                 const timeOffsets = [0, 0.5, 1, 1.5, 2, 3, 5]
-                let attempts = 0
                 let maxAttempts = Math.min(timeOffsets.length, 5)
                 let success = false
                 
                 const tryExtract = (offsetIndex) => {
                     if (offsetIndex >= maxAttempts || success) {
-                        if (!success) {
-                            // 如果所有尝试都失败，生成一个占位图
-                            const placeholderPath = path.join(thumbDir, 'placeholder.jpg')
-                            // 尝试创建一个简单的占位图
-                            resolve(false)
-                        }
+                        if (!success) resolve(false)
                         return
                     }
                     
@@ -452,23 +570,17 @@ exports.init = async api => {
                         '-y', thumbPath
                     ])
                     
-                    let stderrData = ''
-                    ffmpeg.stderr?.on('data', (data) => {
-                        stderrData += data.toString()
-                    })
+                    ffmpeg.stderr?.on('data', () => {})
                     
                     ffmpeg.on('exit', (code) => {
                         if (code === 0) {
-                            // 验证生成的图片不是黑帧
                             fs.stat(thumbPath).then(() => {
                                 success = true
                                 resolve(true)
                             }).catch(() => {
-                                // 如果文件不存在，继续尝试
                                 tryExtract(offsetIndex + 1)
                             })
                         } else {
-                            // 如果失败，尝试下一个时间点
                             tryExtract(offsetIndex + 1)
                         }
                     })
@@ -477,7 +589,6 @@ exports.init = async api => {
                         tryExtract(offsetIndex + 1)
                     })
                     
-                    // 超时保护
                     setTimeout(() => {
                         tryExtract(offsetIndex + 1)
                     }, 5000)
@@ -504,11 +615,9 @@ exports.init = async api => {
     function hasThumbnail(tab, mediaId) {
         const thumbDir = getTabThumbDir(tab)
         
-        // 检查直接匹配
         let thumbPath = path.join(thumbDir, mediaId)
         if (fss.existsSync(thumbPath)) return true
         
-        // 检查视频缩略图 (扩展名替换为 .jpg)
         const ext = path.extname(mediaId)
         if (['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv', '.flv'].includes(ext.toLowerCase())) {
             const baseName = path.basename(mediaId, ext)
@@ -532,12 +641,10 @@ exports.init = async api => {
             try {
                 await fs.stat(tempPath)
                 const imgBuffer = await fs.readFile(tempPath)
-                // 使用改进的缩略图生成
                 await generateThumbnail(imgBuffer, thumbPath)
                 await fs.rename(tempPath, finalPath)
                 promoted.push(id)
-            } catch {
-            }
+            } catch {}
         }
         return promoted
     }
@@ -569,39 +676,52 @@ exports.init = async api => {
         } catch {}
     }
 
-    // 修正备份函数 - 直接从数据库导出而不是读取文件
+    // ===== 备份逻辑 =====
+    
     async function createBackup() {
         const tabs = getTabs()
-        const backupFiles = []
         const timestamp = getTimestamp()
+        const backupFolder = path.join(BACKUP_DIR, timestamp)
+        const backupTabsDir = path.join(backupFolder, 'tabs')
+        
+        await fs.mkdir(backupTabsDir, { recursive: true }).catch(() => {})
+        
+        let backedUpCount = 0
         
         for (const tab of tabs) {
             try {
-                const db = await getDb(tab)
-                const notes = await db.asObject()
+                const tabDir = getTabDir(tab)
+                const backupTabDir = path.join(backupTabsDir, path.basename(tabDir))
                 
-                if (Object.keys(notes).length === 0) {
-                    // 空数据库也备份，但可以跳过
+                try {
+                    await fs.stat(tabDir)
+                } catch {
                     continue
                 }
                 
-                const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
-                const backupFileName = `notes_${safeTabName}_backup_${timestamp}.json`
-                const backupPath = path.join(BACKUP_DIR, backupFileName)
+                await fs.mkdir(backupTabDir, { recursive: true }).catch(() => {})
                 
-                // 将数据库内容转换为JSON并保存
-                await fs.writeFile(backupPath, JSON.stringify(notes, null, 2), 'utf-8')
-                backupFiles.push(backupPath)
-                
-            } catch (e) {
-                // 静默处理单个tab的备份错误
-            }
+                const files = await fs.readdir(tabDir)
+                for (const file of files) {
+                    const srcPath = path.join(tabDir, file)
+                    const dstPath = path.join(backupTabDir, file)
+                    try {
+                        await fs.copyFile(srcPath, dstPath)
+                        backedUpCount++
+                    } catch {}
+                }
+            } catch (e) {}
         }
         
-        return backupFiles
+        try {
+            const mapSrc = TABS_MAP_FILE
+            const mapDst = path.join(backupTabsDir, '_tabs_map.json')
+            await fs.copyFile(mapSrc, mapDst).catch(() => {})
+        } catch {}
+        
+        return { backupFolder, backedUpCount }
     }
 
-    // 修正TXT导出函数 - 导出到backup/txt_exports目录
     async function exportTxtFiles() {
         const autoExport = api.getConfig('autoExportTxt')
         if (!autoExport) return []
@@ -610,31 +730,63 @@ exports.init = async api => {
         const exportFiles = []
         const timestamp = getTimestamp()
         
+        // 创建以时间戳命名的导出文件夹
+        const exportFolder = path.join(BACKUP_DIR, 'txt_exports', timestamp)
+        await fs.mkdir(exportFolder, { recursive: true }).catch(() => {})
+        
         for (const tab of tabs) {
             try {
-                const db = await getDb(tab)
-                const notes = await db.asObject()
-                const keys = Object.keys(notes).sort()
+                const index = await loadTabIndex(tab)
+                const timestamps = Object.keys(index.notes).sort()
                 
-                if (keys.length === 0) continue
+                if (timestamps.length === 0) continue
                 
-                let txtContent = ''
-                for (const ts of keys) {
-                    const note = notes[ts]
-                    if (note && note.m) {
-                        const dateStr = new Date(ts).toLocaleString()
-                        txtContent += `[${dateStr}] ${note.u || 'Unknown'}\n${note.m}\n\n`
+                // 为每个 tab 创建子目录
+                const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
+                const tabExportDir = path.join(exportFolder, safeTabName)
+                await fs.mkdir(tabExportDir, { recursive: true }).catch(() => {})
+                
+                let exportedCount = 0
+                
+                for (const ts of timestamps) {
+                    try {
+                        const meta = index.notes[ts]
+                        const content = await loadNoteContent(tab, ts)
+                        if (content !== null) {
+                            // 每条笔记独立一个 txt 文件
+                            const safeTs = ts.replace(/[\\/:*?"<>|]/g, '_')
+                            const txtFileName = `${safeTs}.txt`
+                            const txtFilePath = path.join(tabExportDir, txtFileName)
+                            
+                            const dateStr = new Date(ts).toLocaleString()
+                            const txtContent = `[${dateStr}] ${meta.u || 'Unknown'}\n${content}\n`
+                            
+                            await fs.writeFile(txtFilePath, txtContent, 'utf-8')
+                            exportFiles.push(txtFilePath)
+                            exportedCount++
+                        }
+                    } catch (noteErr) {
+                        // 单条笔记导出失败不影响其他
                     }
                 }
                 
-                const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
-                const exportFile = path.join(TXT_EXPORT_DIR, `notes_export_${safeTabName}_${timestamp}.txt`)
-                await fs.writeFile(exportFile, txtContent.trim() + '\n', 'utf-8')
-                exportFiles.push(exportFile)
+                // 如果该 tab 没有导出任何笔记，删除空目录
+                if (exportedCount === 0) {
+                    await fs.rmdir(tabExportDir).catch(() => {})
+                }
+                
             } catch (e) {
-                // 静默处理单个tab的导出错误
+                // 单个 tab 导出失败不影响其他
             }
         }
+        
+        // 如果整个导出文件夹为空，删除它
+        try {
+            const tabDirs = await fs.readdir(exportFolder).catch(() => [])
+            if (tabDirs.length === 0) {
+                await fs.rmdir(exportFolder).catch(() => {})
+            }
+        } catch {}
         
         return exportFiles
     }
@@ -644,29 +796,33 @@ exports.init = async api => {
             const retentionDays = api.getConfig('backupRetentionDays') || 3
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
             
-            // 清理JSON备份文件
-            const files = await fs.readdir(BACKUP_DIR).catch(() => [])
-            const backupFiles = files.filter(f => f.includes('_backup_') && f.endsWith('.json'))
+            // 清理旧的 JSON 镜像备份文件夹
+            const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true }).catch(() => [])
             
-            for (const f of backupFiles) {
+            for (const entry of entries) {
+                if (!entry.isDirectory()) continue
+                if (entry.name === 'txt_exports') continue
+                
+                const folderPath = path.join(BACKUP_DIR, entry.name)
                 try {
-                    const stat = await fs.stat(path.join(BACKUP_DIR, f))
+                    const stat = await fs.stat(folderPath)
                     if (stat.mtime.getTime() < cutoffTime) {
-                        await fs.unlink(path.join(BACKUP_DIR, f))
+                        await fs.rm(folderPath, { recursive: true, force: true }).catch(() => {})
                     }
                 } catch {}
             }
             
-            // 清理TXT导出文件
+            // 清理旧的 TXT 导出文件夹（以时间戳命名的文件夹）
+            const txtBaseDir = path.join(BACKUP_DIR, 'txt_exports')
             try {
-                const txtFiles = await fs.readdir(TXT_EXPORT_DIR).catch(() => [])
-                const txtBackups = txtFiles.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
-                
-                for (const f of txtBackups) {
+                const txtFolders = await fs.readdir(txtBaseDir, { withFileTypes: true }).catch(() => [])
+                for (const folder of txtFolders) {
+                    if (!folder.isDirectory()) continue
+                    const folderPath = path.join(txtBaseDir, folder.name)
                     try {
-                        const stat = await fs.stat(path.join(TXT_EXPORT_DIR, f))
+                        const stat = await fs.stat(folderPath)
                         if (stat.mtime.getTime() < cutoffTime) {
-                            await fs.unlink(path.join(TXT_EXPORT_DIR, f))
+                            await fs.rm(folderPath, { recursive: true, force: true }).catch(() => {})
                         }
                     } catch {}
                 }
@@ -676,10 +832,7 @@ exports.init = async api => {
     }
 
     async function performScheduledBackup() {
-        // 防止并发备份
-        if (isBackupRunning) {
-            return
-        }
+        if (isBackupRunning) return
         
         isBackupRunning = true
         try {
@@ -688,9 +841,7 @@ exports.init = async api => {
             if (api.getConfig('autoExportTxt')) {
                 await exportTxtFiles()
             }
-        } catch (e) {
-            // 静默处理备份错误
-        } finally {
+        } catch (e) {} finally {
             isBackupRunning = false
         }
     }
@@ -727,94 +878,34 @@ exports.init = async api => {
         }
     }
 
-    // ===== 启动备份逻辑 =====
-    // 1. 先设置定时器
     setupBackupTimer()
     
-    // 2. 立即执行首次备份（服务器重启后主动镜像备份）
-    setTimeout(async () => {
-        await performScheduledBackup()
-    }, 1000) // 延迟1秒确保所有组件就绪
-    
-    // 3. 配置变更时立即备份并重置定时器
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
-        // 重置定时器
         setupBackupTimer()
-        
-        // 配置变更后立即执行备份
         setTimeout(async () => {
             await performScheduledBackup()
         }, 500)
     })
 
-    const TABS_DATA_FILE = path.join(storage, 'notes_tabs_order.json')
-    
-    async function getTabsData() {
-        try {
-            const data = await fs.readFile(TABS_DATA_FILE, 'utf-8')
-            const saved = JSON.parse(data)
-            const currentTabs = getTabs()
-            
-            let order, names
-            if (Array.isArray(saved)) {
-                order = saved
-                names = {}
-            } else {
-                order = saved.order || []
-                names = saved.names || {}
-            }
-            
-            let valid = order.filter(t => currentTabs.includes(t))
-            for (const t of currentTabs) {
-                if (!valid.includes(t)) valid.push(t)
-            }
-            
-            const cleanedNames = {}
-            for (const [key, value] of Object.entries(names)) {
-                if (currentTabs.includes(key)) {
-                    cleanedNames[key] = value
-                }
-            }
-            
-            if (valid.length !== order.length || 
-                valid.some((t, i) => t !== order[i]) ||
-                Object.keys(cleanedNames).length !== Object.keys(names).length) {
-                await saveTabsData(valid, cleanedNames)
-            }
-            
-            return { order: valid, names: cleanedNames }
-        } catch {
-            const tabs = getTabs()
-            await saveTabsData(tabs, {})
-            return { order: tabs, names: {} }
-        }
-    }
-    
-    async function saveTabsData(order, names = {}) {
-        await fs.writeFile(TABS_DATA_FILE, JSON.stringify({ order, names }, null, 2))
-    }
-
-    // ============= API 处理函数 =============
+    // ===== API 处理函数 =====
     
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
-        const tabsData = await getTabsData()
-        let tabs = tabsData.order.length > 0 ? tabsData.order : getTabs()
+        const tabsMap = await loadTabsMap()
+        let tabs = tabsMap.order.length > 0 ? tabsMap.order : getTabs()
 
         if (!username) {
             const pubTabs = getPublicTabs()
             tabs = tabs.filter(t => pubTabs.includes(t))
             const result = {}
             for (const tab of tabs) {
-                const db = await getDb(tab)
-                result[tab] = db.size()
+                result[tab] = await getTabNoteCount(tab)
             }
             ctx.body = { 
                 tabs, 
                 counts: result, 
                 warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
-                tabNames: tabsData.names,
-                maxRetain: RETAIN_NOTES,
+                tabNames: tabsMap.names,
                 isGuest: true
             }
             ctx.status = 200
@@ -825,15 +916,13 @@ exports.init = async api => {
 
         const result = {}
         for (const tab of tabs) {
-            const db = await getDb(tab)
-            result[tab] = db.size()
+            result[tab] = await getTabNoteCount(tab)
         }
         ctx.body = { 
             tabs, 
             counts: result, 
             warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
-            tabNames: tabsData.names,
-            maxRetain: RETAIN_NOTES,
+            tabNames: tabsMap.names,
             isGuest: false
         }
         ctx.status = 200
@@ -850,14 +939,14 @@ exports.init = async api => {
             ctx.status = 400; return
         }
         
-        const tabsData = await getTabsData()
+        const tabsMap = await loadTabsMap()
         if (newName.trim() === '') {
-            delete tabsData.names[tab]
+            delete tabsMap.names[tab]
         } else {
-            tabsData.names[tab] = sanitizeForDb(newName.trim())
+            tabsMap.names[tab] = sanitizeForDb(newName.trim())
         }
         
-        await saveTabsData(tabsData.order, tabsData.names)
+        await saveTabsMap(tabsMap)
         api.notifyClient('notes', 'tabRenamed', { tab, newName: newName.trim() || tab })
         ctx.body = { ok: true, tab, newName: newName.trim() || tab }
         ctx.status = 200
@@ -872,30 +961,34 @@ exports.init = async api => {
         const offset = parseInt(ctx.query?.offset) || 0
         const limit = Math.min(parseInt(ctx.query?.limit) || PAGE_SIZE, 100)
         
-        const db = await getDb(tab)
-        const notes = await db.asObject()
-        const allKeys = Object.keys(notes).sort()
-        const totalCount = allKeys.length
+        const index = await loadTabIndex(tab)
+        const allTimestamps = Object.keys(index.notes).sort()
+        const totalCount = allTimestamps.length
         
         const endIdx = totalCount - offset
         const startIdx = Math.max(0, endIdx - limit)
-        const pageKeys = allKeys.slice(startIdx, endIdx)
+        const pageTimestamps = allTimestamps.slice(startIdx, endIdx)
         
         const pageNotes = {}
-        for (const k of pageKeys) {
-            pageNotes[k] = notes[k]
+        const imageIds = new Set()
+        const movIds = new Set()
+        
+        for (const ts of pageTimestamps) {
+            const meta = index.notes[ts]
+            const content = await loadNoteContent(tab, ts)
+            if (content !== null) {
+                pageNotes[ts] = {
+                    m: content,
+                    u: meta.u,
+                    starred: meta.starred || false,
+                    collapsed: meta.collapsed || false
+                }
+                for (const id of extractImageIds(content)) imageIds.add(id)
+                for (const id of extractMovIds(content)) movIds.add(id)
+            }
         }
         
         const hasMoreData = startIdx > 0
-        
-        const imageIds = new Set()
-        const movIds = new Set()
-        for (const note of Object.values(pageNotes)) {
-            if (note.m) {
-                for (const id of extractImageIds(note.m)) imageIds.add(id)
-                for (const id of extractMovIds(note.m)) movIds.add(id)
-            }
-        }
         
         const thumbMap = {}
         for (const id of imageIds) {
@@ -917,8 +1010,7 @@ exports.init = async api => {
         ctx.body = { 
             notes: pageNotes, 
             count: totalCount, 
-            warning: totalCount >= MAX_STORAGE_WARNING, 
-            maxRetain: RETAIN_NOTES,
+            warning: totalCount >= MAX_STORAGE_WARNING,
             thumbMap,
             fileNames,
             hasMore: hasMoreData,
@@ -937,7 +1029,7 @@ exports.init = async api => {
         const tab = body.tab
         const forceCollapsed = body.collapsed === true
         
-        if (!m || typeof m !== 'string' || m.length > MAX_NOTE_LEN) {
+        if (!m || typeof m !== 'string') {
             ctx.status = 400; return
         }
         if (!tab) { ctx.status = 400; return }
@@ -950,13 +1042,7 @@ exports.init = async api => {
         }
         tdb.put(username, Date.now())
         
-        const db = await getDb(tab)
-        
-        if (db.size() >= RETAIN_NOTES) {
-            ctx.status = 400
-            ctx.body = { error: 'Storage full', message: 'Tab has reached maximum notes limit. Please delete some notes before adding new ones.', count: db.size(), maxRetain: RETAIN_NOTES }
-            return
-        }
+        const count = await getTabNoteCount(tab)
         
         const ts = new Date().toISOString()
         
@@ -966,7 +1052,7 @@ exports.init = async api => {
         }
         
         const lineCount = sanitizedM.split('\n').length
-        const autoCollapsed = forceCollapsed || lineCount > AUTO_COLLAPSE_LINES
+        const autoCollapsed = forceCollapsed || lineCount > 100
         
         if (username && username !== 'Guest') {
             const imageIds = extractImageIds(sanitizedM)
@@ -985,13 +1071,19 @@ exports.init = async api => {
             }
         }
         
-        db.put(ts, { m: sanitizedM, u: username, starred: false, collapsed: autoCollapsed })
-        const count = db.size()
+        await addNoteToTab(tab, ts, {
+            m: sanitizedM,
+            u: username,
+            starred: false,
+            collapsed: autoCollapsed
+        })
+        
+        const newCount = count + 1
         
         api.notifyClient('notes', 'newNote', { ts, u: username, m: sanitizedM, tab, starred: false, collapsed: autoCollapsed })
         
         ctx.status = 201
-        ctx.body = { count, warning: count >= MAX_STORAGE_WARNING, maxRetain: RETAIN_NOTES }
+        ctx.body = { count: newCount, warning: newCount >= MAX_STORAGE_WARNING }
         
         if (api.getConfig('autoExportTxt')) {
             exportTxtFiles().catch(() => {})
@@ -1006,12 +1098,11 @@ exports.init = async api => {
         
         const { ts, tab, m } = body
         
-        if (!ts || !tab || !m || typeof m !== 'string' || m.length > MAX_NOTE_LEN) {
+        if (!ts || !tab || !m || typeof m !== 'string') {
             ctx.status = 400; return
         }
         
-        const db = await getDb(tab)
-        const note = await db.get(ts)
+        const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
@@ -1061,7 +1152,13 @@ exports.init = async api => {
             }
         }
         
-        db.put(ts, { m: sanitizedM, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
+        await updateNoteInTab(tab, ts, {
+            m: sanitizedM,
+            u: note.u,
+            starred: note.starred || false,
+            collapsed: note.collapsed || false
+        })
+        
         api.notifyClient('notes', 'updateNote', { ts, tab, m: sanitizedM, starred: note.starred || false, collapsed: note.collapsed || false })
         ctx.status = 200
         
@@ -1080,13 +1177,17 @@ exports.init = async api => {
         
         if (!ts || !tab) { ctx.status = 400; return }
         
-        const db = await getDb(tab)
-        const note = await db.get(ts)
+        const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
         const newStarred = !(note.starred || false)
-        db.put(ts, { m: note.m, u: note.u, starred: newStarred, collapsed: note.collapsed || false })
+        await updateNoteInTab(tab, ts, {
+            u: note.u,
+            starred: newStarred,
+            collapsed: note.collapsed || false
+        })
+        
         api.notifyClient('notes', 'toggleStar', { ts, tab, starred: newStarred })
         ctx.body = { starred: newStarred }
         ctx.status = 200
@@ -1103,13 +1204,17 @@ exports.init = async api => {
         
         if (!ts || !tab) { ctx.status = 400; return }
         
-        const db = await getDb(tab)
-        const note = await db.get(ts)
+        const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
         const newCollapsed = !(note.collapsed || false)
-        db.put(ts, { m: note.m, u: note.u, starred: note.starred || false, collapsed: newCollapsed })
+        await updateNoteInTab(tab, ts, {
+            u: note.u,
+            starred: note.starred || false,
+            collapsed: newCollapsed
+        })
+        
         api.notifyClient('notes', 'toggleCollapse', { ts, tab, collapsed: newCollapsed })
         ctx.body = { collapsed: newCollapsed }
         ctx.status = 200
@@ -1125,8 +1230,7 @@ exports.init = async api => {
         
         if (!ts || !tab) { ctx.status = 400; return }
         
-        const db = await getDb(tab)
-        const note = await db.get(ts)
+        const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
@@ -1155,7 +1259,7 @@ exports.init = async api => {
             await cleanFileNameMapping(tab, 'att', attIds)
         }
         
-        db.del(ts)
+        await deleteNoteFromTab(tab, ts)
         api.notifyClient('notes', 'deleteNote', { ts, tab })
         ctx.status = 200
         
@@ -1174,8 +1278,9 @@ exports.init = async api => {
             ctx.status = 400; return
         }
         
-        const tabsData = await getTabsData()
-        await saveTabsData(newOrder, tabsData.names)
+        const tabsMap = await loadTabsMap()
+        tabsMap.order = newOrder
+        await saveTabsMap(tabsMap)
         api.notifyClient('notes', 'tabsReordered', { tabs: newOrder })
         ctx.body = { ok: true }
         ctx.status = 200
@@ -1201,56 +1306,98 @@ exports.init = async api => {
         let totalNotes = 0
         
         for (const tab of tabs) {
-            const db = await getDb(tab)
-            const notes = await db.asObject()
-            const keys = Object.keys(notes)
-            const count = keys.length
-            dbInfo[tab] = { count, firstNote: count > 0 ? keys[0] : null, lastNote: count > 0 ? keys[count - 1] : null }
+            const index = await loadTabIndex(tab)
+            const timestamps = Object.keys(index.notes).sort()
+            const count = timestamps.length
+            dbInfo[tab] = { 
+                count, 
+                firstNote: count > 0 ? timestamps[0] : null, 
+                lastNote: count > 0 ? timestamps[count - 1] : null 
+            }
             totalNotes += count
         }
         
         let backups = []
+        try {
+            const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true }).catch(() => [])
+            const backupDirs = entries.filter(e => e.isDirectory() && e.name !== 'txt_exports')
+            
+            for (const entry of backupDirs) {
+                const folderPath = path.join(BACKUP_DIR, entry.name)
+                try {
+                    const stat = await fs.stat(folderPath)
+                    let totalSize = 0
+                    let fileCount = 0
+                    const tabsDirs = await fs.readdir(path.join(folderPath, 'tabs')).catch(() => [])
+                    for (const tabDir of tabsDirs) {
+                        const tabPath = path.join(folderPath, 'tabs', tabDir)
+                        try {
+                            const files = await fs.readdir(tabPath)
+                            fileCount += files.length
+                            for (const f of files) {
+                                try {
+                                    const fstat = await fs.stat(path.join(tabPath, f))
+                                    totalSize += fstat.size
+                                } catch {}
+                            }
+                        } catch {}
+                    }
+                    
+                    backups.push({
+                        name: entry.name,
+                        timestamp: entry.name,
+                        size: totalSize,
+                        sizeReadable: formatBytes(totalSize),
+                        fileCount: fileCount,
+                        created: stat.mtime.toISOString()
+                    })
+                } catch {}
+            }
+            backups.sort((a, b) => b.created.localeCompare(a.created))
+        } catch {}
+        
         let txtExports = []
         try {
-            const backupFiles = await fs.readdir(BACKUP_DIR).catch(() => [])
-            const jsonBackups = backupFiles.filter(f => f.includes('_backup_') && f.endsWith('.json'))
-            backups = await Promise.all(
-                jsonBackups.map(async f => {
-                    const stat = await fs.stat(path.join(BACKUP_DIR, f))
-                    const nameWithoutExt = f.replace('.json', '')
-                    const parts = nameWithoutExt.split('_backup_')
-                    const tabName = parts[0] ? parts[0].replace('notes_', '') : ''
-                    const timestamp = parts[1] || ''
-                    
-                    return { 
-                        name: f, 
-                        tab: tabName,
-                        size: stat.size, 
-                        sizeReadable: formatBytes(stat.size), 
-                        created: stat.mtime.toISOString(), 
-                        timestamp: timestamp
-                    }
-                })
-            )
-            backups.sort((a, b) => b.created.localeCompare(a.created))
+            const txtBaseDir = path.join(BACKUP_DIR, 'txt_exports')
+            const txtFolders = await fs.readdir(txtBaseDir, { withFileTypes: true }).catch(() => [])
             
-            // 读取TXT导出文件
-            const txtFiles = await fs.readdir(TXT_EXPORT_DIR).catch(() => [])
-            const txtBackups = txtFiles.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
-            txtExports = await Promise.all(
-                txtBackups.map(async f => {
-                    const stat = await fs.stat(path.join(TXT_EXPORT_DIR, f))
-                    const tabName = f.replace('notes_export_', '').replace(/_\d{8}_\d{4}\.txt$/, '')
-                    return {
-                        name: f,
-                        tab: tabName,
-                        size: stat.size,
-                        sizeReadable: formatBytes(stat.size),
-                        modified: stat.mtime.toISOString()
+            for (const folder of txtFolders) {
+                if (!folder.isDirectory()) continue
+                const folderPath = path.join(txtBaseDir, folder.name)
+                try {
+                    const stat = await fs.stat(folderPath)
+                    let totalSize = 0
+                    let fileCount = 0
+                    const tabDirs = await fs.readdir(folderPath).catch(() => [])
+                    
+                    for (const tabDir of tabDirs) {
+                        const tabPath = path.join(folderPath, tabDir)
+                        try {
+                            const tabStat = await fs.stat(tabPath)
+                            if (!tabStat.isDirectory()) continue
+                            const files = await fs.readdir(tabPath)
+                            fileCount += files.length
+                            for (const f of files) {
+                                try {
+                                    const fstat = await fs.stat(path.join(tabPath, f))
+                                    totalSize += fstat.size
+                                } catch {}
+                            }
+                        } catch {}
                     }
-                })
-            )
-            txtExports.sort((a, b) => b.modified.localeCompare(a.modified))
+                    
+                    txtExports.push({
+                        name: folder.name,
+                        timestamp: folder.name,
+                        size: totalSize,
+                        sizeReadable: formatBytes(totalSize),
+                        fileCount: fileCount,
+                        tabCount: tabDirs.length,
+                        created: stat.mtime.toISOString()
+                    })
+                } catch {}
+            }
+            txtExports.sort((a, b) => b.created.localeCompare(a.created))
         } catch {}
         
         let imgStats = { count: 0, totalSize: 0, tabs: {}, tempCount: 0 }
@@ -1340,7 +1487,6 @@ exports.init = async api => {
         ctx.body = {
             config: {
                 tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }],
-                maxNoteLen: MAX_NOTE_LEN, retainNotes: RETAIN_NOTES,
                 spamDelay: SPAM_DELAY, storageWarning: MAX_STORAGE_WARNING,
                 backupInterval: api.getConfig('backupInterval'),
                 backupRetentionDays: api.getConfig('backupRetentionDays'),
@@ -1352,27 +1498,16 @@ exports.init = async api => {
                 thumbQuality: api.getConfig('thumbQuality') || THUMB_QUALITY,
                 thumbPixels: api.getConfig('thumbPixels') || 400,
                 useSharpPlugin: api.getConfig('useSharpPlugin') !== false,
-                pageSize: PAGE_SIZE
+                pageSize: PAGE_SIZE,
+                storageType: 'file-based'
             },
             databases: dbInfo, totalNotes,
             storageWarning: totalNotes >= MAX_STORAGE_WARNING, backups,
             txtExports,
-            imgStats: {
-                ...imgStats,
-                sizeReadable: formatBytes(imgStats.totalSize)
-            },
-            thumbStats: {
-                ...thumbStats,
-                sizeReadable: formatBytes(thumbStats.totalSize)
-            },
-            movStats: {
-                ...movStats,
-                sizeReadable: formatBytes(movStats.totalSize)
-            },
-            attStats: {
-                ...attStats,
-                sizeReadable: formatBytes(attStats.totalSize)
-            }
+            imgStats: { ...imgStats, sizeReadable: formatBytes(imgStats.totalSize) },
+            thumbStats: { ...thumbStats, sizeReadable: formatBytes(thumbStats.totalSize) },
+            movStats: { ...movStats, sizeReadable: formatBytes(movStats.totalSize) },
+            attStats: { ...attStats, sizeReadable: formatBytes(attStats.totalSize) }
         }
         ctx.status = 200
     }
@@ -1385,14 +1520,27 @@ exports.init = async api => {
         const tabs = getTabs()
         const exportData = {
             exportTime: new Date().toISOString(), exportedBy: username,
-            config: { tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }] }, data: {}
+            config: { tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }] }, 
+            storageType: 'file-based',
+            data: {}
         }
         
         const tabsToExport = tab ? [tab] : tabs
         for (const t of tabsToExport) {
             if (!tabs.includes(t)) continue
-            const db = await getDb(t)
-            exportData.data[t] = await db.asObject()
+            const index = await loadTabIndex(t)
+            exportData.data[t] = {}
+            for (const ts of Object.keys(index.notes)) {
+                const content = await loadNoteContent(t, ts)
+                if (content !== null) {
+                    exportData.data[t][ts] = {
+                        m: content,
+                        u: index.notes[ts].u,
+                        starred: index.notes[ts].starred || false,
+                        collapsed: index.notes[ts].collapsed || false
+                    }
+                }
+            }
         }
         
         ctx.type = 'application/json'
@@ -1423,12 +1571,16 @@ exports.init = async api => {
         const tabs = getTabs()
         for (const [tab, notes] of Object.entries(body.data)) {
             if (!tabs.includes(tab) || typeof notes !== 'object') continue
-            const db = await getDb(tab)
             for (const [ts, note] of Object.entries(notes)) {
                 if (note.m && note.u) {
                     const sanitizedM = sanitizeForDb(note.m)
                     if (!sanitizedM) continue
-                    db.put(ts, { m: sanitizedM, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
+                    await addNoteToTab(tab, ts, {
+                        m: sanitizedM,
+                        u: note.u,
+                        starred: note.starred || false,
+                        collapsed: note.collapsed || false
+                    })
                     imported++
                 }
             }
@@ -1447,7 +1599,7 @@ exports.init = async api => {
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
         
         try {
-            const backupFiles = await createBackup()
+            const result = await createBackup()
             await cleanupOldBackups()
             
             let txtFiles = []
@@ -1457,10 +1609,8 @@ exports.init = async api => {
             
             ctx.body = { 
                 ok: true, 
-                files: backupFiles.map(f => ({
-                    name: path.basename(f),
-                    path: f
-                })),
+                backupFolder: result.backupFolder,
+                fileCount: result.backedUpCount,
                 txtFiles: txtFiles.map(f => ({
                     name: path.basename(f),
                     path: f
@@ -1484,29 +1634,29 @@ exports.init = async api => {
         
         await createBackup()
         
-        const db = await getDb(tab)
-        const notes = await db.asObject()
+        const index = await loadTabIndex(tab)
         const imgDir = getTabImgDir(tab)
         const tempDir = getTempDir(tab)
         const thumbDir = getTabThumbDir(tab)
         const movDir = getTabMovDir(tab)
         const attDir = getTabAttDir(tab)
         
-        for (const note of Object.values(notes)) {
-            if (note.m) {
-                const imgIds = extractImageIds(note.m)
+        for (const ts of Object.keys(index.notes)) {
+            const content = await loadNoteContent(tab, ts)
+            if (content) {
+                const imgIds = extractImageIds(content)
                 for (const id of imgIds) {
                     await fs.unlink(path.join(imgDir, id)).catch(() => {})
                     await fs.unlink(path.join(thumbDir, id)).catch(() => {})
                 }
                 
-                const movIds = extractMovIds(note.m)
+                const movIds = extractMovIds(content)
                 for (const id of movIds) {
                     await fs.unlink(path.join(movDir, id)).catch(() => {})
                     await deleteVideoThumbnail(tab, id)
                 }
                 
-                const attIds = extractAttIds(note.m)
+                const attIds = extractAttIds(content)
                 for (const id of attIds) {
                     await fs.unlink(path.join(attDir, id)).catch(() => {})
                 }
@@ -1536,8 +1686,8 @@ exports.init = async api => {
             await fs.unlink(path.join(attDir, '.filenames')).catch(() => {})
         } catch {}
         
-        const count = db.size()
-        db.clear()
+        const count = Object.keys(index.notes).length
+        await clearTabData(tab)
         
         api.notifyClient('notes', 'tabCleared', { tab })
         
@@ -1557,9 +1707,11 @@ exports.init = async api => {
             const txtFiles = await exportTxtFiles()
             ctx.body = { 
                 ok: true, 
+                count: txtFiles.length,
                 files: txtFiles.map(f => ({
                     name: path.basename(f),
-                    path: f
+                    path: f,
+                    tab: path.basename(path.dirname(f))
                 }))
             }
         } catch {
@@ -1701,9 +1853,10 @@ exports.init = async api => {
     }
     
     async function serveImage(ctx) {
-        const tab = ctx.params?.tab
-        const imageId = ctx.params?.imageId
-        const isTemp = ctx.params?.isTemp === 'temp'
+        const params = ctx.params || {}
+        const tab = params.tab
+        const imageId = params.imageId
+        const isTemp = params.isTemp === 'temp'
         
         if (!tab || !imageId) { ctx.status = 404; return }
         
@@ -1739,8 +1892,9 @@ exports.init = async api => {
     }
     
     async function serveThumb(ctx) {
-        const tab = ctx.params?.tab
-        const thumbId = ctx.params?.thumbId
+        const params = ctx.params || {}
+        const tab = params.tab
+        const thumbId = params.thumbId
         
         if (!tab || !thumbId) { ctx.status = 404; return }
         
@@ -1753,7 +1907,6 @@ exports.init = async api => {
             ctx.body = await fs.readFile(thumbPath)
             ctx.status = 200
         } catch {
-            // 如果缩略图不存在，尝试返回原图
             const imgDir = getTabImgDir(tab)
             const imgPath = path.join(imgDir, thumbId)
             try {
@@ -1775,8 +1928,9 @@ exports.init = async api => {
     }
     
     async function serveMov(ctx) {
-        const tab = ctx.params?.tab
-        const fileId = ctx.params?.fileId
+        const params = ctx.params || {}
+        const tab = params.tab
+        const fileId = params.fileId
         if (!tab || !fileId) { ctx.status = 404; return }
         const filePath = path.join(getTabMovDir(tab), fileId)
         try {
@@ -1826,8 +1980,9 @@ exports.init = async api => {
     }
 
     async function serveAtt(ctx) {
-        const tab = ctx.params?.tab
-        const fileId = ctx.params?.fileId
+        const params = ctx.params || {}
+        const tab = params.tab
+        const fileId = params.fileId
         if (!tab || !fileId) { ctx.status = 404; return }
         const filePath = path.join(getTabAttDir(tab), fileId)
         try {
@@ -1848,6 +2003,7 @@ exports.init = async api => {
             const p = ctx.path
             const method = ctx.method.toUpperCase()
             
+            // 处理缩略图请求
             if (p.startsWith('/~/notes/thumb/')) {
                 const parts = p.replace('/~/notes/thumb/', '').split('/')
                 if (parts.length >= 2) {
@@ -1857,6 +2013,7 @@ exports.init = async api => {
                 return
             }
             
+            // 处理图片请求
             if (p.startsWith('/~/notes/img/')) {
                 const pathParts = p.replace('/~/notes/img/', '').split('/')
                 if (pathParts[0] === 'temp' && pathParts.length >= 3) {
@@ -1870,6 +2027,7 @@ exports.init = async api => {
                 return
             }
             
+            // 处理视频/音频请求
             if (p.startsWith('/~/notes/mov/')) {
                 const parts = p.replace('/~/notes/mov/', '').split('/')
                 if (parts.length >= 2) {
@@ -1879,6 +2037,7 @@ exports.init = async api => {
                 return
             }
             
+            // 处理附件请求
             if (p.startsWith('/~/notes/att/')) {
                 const parts = p.replace('/~/notes/att/', '').split('/')
                 if (parts.length >= 2) {
@@ -1888,6 +2047,7 @@ exports.init = async api => {
                 return
             }
             
+            // 处理 API 请求
             if (!p.startsWith(API_BASE)) return
             
             if (p === `${API_BASE}check` && method === 'GET') { await checkAccess(ctx); return }
