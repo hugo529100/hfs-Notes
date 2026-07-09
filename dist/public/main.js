@@ -19,18 +19,30 @@
         } catch { return false; }
     }
 
+    // 将文件名转为安全的 ASCII 名称，保留扩展名
+    function sanitizeFileNameForUpload(originalName) {
+        const ext = originalName.lastIndexOf('.') > 0 ? originalName.substring(originalName.lastIndexOf('.')) : '';
+        const base = ext ? originalName.substring(0, originalName.lastIndexOf('.')) : originalName;
+        const timestamp = Date.now().toString(36);
+        const rand = Math.random().toString(36).substring(2, 6);
+        const safeBase = `file_${timestamp}_${rand}`;
+        return { safeName: safeBase + ext, displayName: originalName };
+    }
+
     async function uploadImage(file, tab) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = async () => {
                 try {
+                    const { safeName, displayName } = sanitizeFileNameForUpload(file.name);
                     const res = await fetch('/~/api/notes/upload-image', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            name: file.name,
+                            name: safeName,
                             data: reader.result,
-                            tab: tab
+                            tab: tab,
+                            displayName: displayName
                         })
                     });
                     if (!res.ok) {
@@ -38,7 +50,7 @@
                         throw new Error(err.error || 'Upload failed (status: ' + res.status + ')');
                     }
                     const data = await res.json();
-                    resolve(data);
+                    resolve({ ...data, displayName: displayName });
                 } catch (e) {
                     reject(e);
                 }
@@ -53,13 +65,15 @@
             const reader = new FileReader();
             reader.onload = async () => {
                 try {
+                    const { safeName, displayName } = sanitizeFileNameForUpload(file.name);
                     const res = await fetch('/~/api/notes/upload-file', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            name: file.name,
+                            name: safeName,
                             data: reader.result,
-                            tab: tab
+                            tab: tab,
+                            displayName: displayName
                         })
                     });
                     if (!res.ok) {
@@ -67,7 +81,7 @@
                         throw new Error(err.error || 'Upload failed');
                     }
                     const data = await res.json();
-                    resolve(data);
+                    resolve({ ...data, displayName: displayName });
                 } catch (e) { reject(e); }
             };
             reader.onerror = () => reject(new Error('Failed to read file'));
@@ -140,9 +154,6 @@
 
     /**
      * 滚动锚定：锁定锚点元素的视口位置，执行操作后补偿滚动偏移
-     * @param {HTMLElement} container 滚动容器 (.note-items)
-     * @param {HTMLElement} anchorElement 锚点元素（按钮或编辑区域）
-     * @param {Function} callback 执行高度变化操作
      */
     function anchorScroll(container, anchorElement, callback) {
         if (!container || !anchorElement) {
@@ -170,7 +181,6 @@
 
     function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName }) {
         const { u, ts, starred, collapsed } = note;
-        // 兼容新旧 API：m 是完整内容，s 是摘要
         const summaryText = note.s || (note.m ? note.m.substring(0, 200) : '');
         const hasMoreContent = note.hasMore !== undefined ? note.hasMore : (note.m ? note.m.length > 200 : false);
         const initialFullContent = note.m || null;
@@ -255,7 +265,6 @@
             };
         }, [editing, ts, effectiveTab, editVal]);
         
-        // 展开时加载完整内容
         const loadFullContent = useCallback(async () => {
             if (fullContent !== null || loadingFull || !hasMoreContent) return;
             setLoadingFull(true);
@@ -274,7 +283,6 @@
             }
         }, [fullContent, loadingFull, hasMoreContent, ts, effectiveTab, summaryText]);
         
-        // 当展开且需要加载完整内容时
         useEffect(() => {
             if (!effectiveCollapsed && !isFullscreenColumn && fullContent === null && hasMoreContent) {
                 loadFullContent();
@@ -289,7 +297,6 @@
                 const headerRow = noteEl ? noteEl.querySelector('.note-header-row') : null;
                 const anchorEl = headerRow || noteEl;
                 
-                // 先加载完整内容，再进入编辑
                 const enterEdit = () => {
                     const content = fullContent || summaryText;
                     setEditing(true);
@@ -399,12 +406,13 @@
                             allMarks += `[img:${result.imageId}]`;
                         } else {
                             const result = await uploadFileToServer(file, effectiveTab);
+                            const displayName = result.displayName || result.name || file.name;
                             if (result.isVideo) {
-                                allMarks += `[mov:${result.fileId}:${result.name}]`;
+                                allMarks += `[mov:${result.fileId}:${displayName}]`;
                             } else if (result.isAudio) {
-                                allMarks += `[mov:${result.fileId}:${result.name}]`;
+                                allMarks += `[mov:${result.fileId}:${displayName}]`;
                             } else {
-                                allMarks += `[att:${result.fileId}:${result.name}]`;
+                                allMarks += `[att:${result.fileId}:${displayName}]`;
                             }
                         }
                     } catch (e) {
@@ -479,9 +487,6 @@
         const renderContentWithHighlight = (content, isEditMode) => {
             if (!content) return '';
             
-            const imgMarkRegex = /\[img:(.+?)\]/g;
-            const movMarkRegex = /\[mov:(.+?):(.+?)\]/g;
-            const attMarkRegex = /\[att:(.+?):(.+?)\]/g;
             const linkRegex = /(https?:\/\/\S+)/gi;
             const imgExtRegex = /\.(gif|jpe?g|tiff?|png|webp|bmp)(\?.*)?$/i;
             
@@ -510,26 +515,23 @@
             
             const parts = [];
             let lastIndex = 0;
-            let match;
             
             const allMatches = [];
-            
-            imgMarkRegex.lastIndex = 0;
-            while ((match = imgMarkRegex.exec(text)) !== null) {
-                allMatches.push({ index: match.index, endIndex: match.index + match[0].length, type: 'image', imageId: match[1] });
+            // 一次性扫描所有标记，避免多次正则导致的性能问题
+            const unifiedRegex = /\[(img|mov|att):([^\]]+)\]/g;
+            let match;
+            while ((match = unifiedRegex.exec(text)) !== null) {
+                const t = match[1];
+                const payload = match[2];
+                if (t === 'img') {
+                    allMatches.push({ index: match.index, endIndex: match.index + match[0].length, type: 'image', imageId: payload });
+                } else if (t === 'mov' || t === 'att') {
+                    const ci = payload.indexOf(':');
+                    const fid = ci > -1 ? payload.substring(0, ci) : payload;
+                    const nm = ci > -1 ? payload.substring(ci + 1) : payload;
+                    allMatches.push({ index: match.index, endIndex: match.index + match[0].length, type: t === 'mov' ? 'media' : 'attachment', fileId: fid, name: nm });
+                }
             }
-            
-            movMarkRegex.lastIndex = 0;
-            while ((match = movMarkRegex.exec(text)) !== null) {
-                allMatches.push({ index: match.index, endIndex: match.index + match[0].length, type: 'media', fileId: match[1], name: match[2] });
-            }
-            
-            attMarkRegex.lastIndex = 0;
-            while ((match = attMarkRegex.exec(text)) !== null) {
-                allMatches.push({ index: match.index, endIndex: match.index + match[0].length, type: 'attachment', fileId: match[1], name: match[2] });
-            }
-            
-            allMatches.sort((a, b) => a.index - b.index);
             
             lastIndex = 0;
             for (const m of allMatches) {
@@ -579,10 +581,8 @@
                         onClick: function(e) {
                             const img = e.currentTarget;
                             const imageId = img.dataset.imageId;
-                            
                             if (isGif) return;
                             if (img.dataset.hasThumb !== 'true') return;
-                            
                             handleImageToggle(e, imageId);
                         },
                         onLoad: function(e) {
@@ -818,7 +818,6 @@
             const noteEl = noteItemRef.current;
             const scrollContainer = noteEl ? noteEl.closest('.note-items') : null;
             
-            // 确定锚点元素：优先使用被点击的按钮本身
             const anchorEl = btn || (noteEl ? noteEl.querySelector('.note-header-row') : null) || noteEl;
             
             if (currentGuest || isFullscreenColumn) {
@@ -1097,7 +1096,6 @@
         const dragCounterRef = useRef(0);
         const panelRef = useRef(null);
         const currentOffsetRef = useRef(0);
-        // 记录旧 API 数据中的完整内容缓存
         const fullContentFallbackRef = useRef({});
         
         useEffect(() => { mRef.current = m; }, [m]);
@@ -1240,7 +1238,6 @@
                     
                     if (e === 'newNote') {
                         shouldAutoScrollRef.current = true;
-                        // SSE 推送的 newNote 包含完整 m，同时设置 s 作为摘要
                         const noteData = { 
                             ...data, 
                             _tab: activeTabRef.current,
@@ -1353,12 +1350,13 @@
                                     allMarks += `[img:${result.imageId}]`;
                                 } else {
                                     const result = await uploadFileToServer(file, activeTabRef.current);
+                                    const displayName = result.displayName || result.name || file.name;
                                     if (result.isVideo) {
-                                        allMarks += `[mov:${result.fileId}:${result.name}]`;
+                                        allMarks += `[mov:${result.fileId}:${displayName}]`;
                                     } else if (result.isAudio) {
-                                        allMarks += `[mov:${result.fileId}:${result.name}]`;
+                                        allMarks += `[mov:${result.fileId}:${displayName}]`;
                                     } else {
-                                        allMarks += `[att:${result.fileId}:${result.name}]`;
+                                        allMarks += `[att:${result.fileId}:${displayName}]`;
                                     }
                                 }
                             } catch (e) {
@@ -1487,12 +1485,13 @@
                                 allMarks += `[img:${result.imageId}]`;
                             } else {
                                 const result = await uploadFileToServer(file, activeTabRef.current);
+                                const displayName = result.displayName || result.name || file.name;
                                 if (result.isVideo) {
-                                    allMarks += `[mov:${result.fileId}:${result.name}]`;
+                                    allMarks += `[mov:${result.fileId}:${displayName}]`;
                                 } else if (result.isAudio) {
-                                    allMarks += `[mov:${result.fileId}:${result.name}]`;
+                                    allMarks += `[mov:${result.fileId}:${displayName}]`;
                                 } else {
-                                    allMarks += `[att:${result.fileId}:${result.name}]`;
+                                    allMarks += `[att:${result.fileId}:${displayName}]`;
                                 }
                             }
                         } catch (e) {
@@ -1842,7 +1841,6 @@
             }
             
             try {
-                // 使用 summary=1 参数只获取摘要
                 const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}&summary=1`, {
                     signal: controller.signal
                 });
@@ -1850,7 +1848,6 @@
                 
                 const rawNotes = data.notes || {};
                 const sortedKeys = Object.keys(rawNotes).sort();
-                // 保留原始数据结构（s=摘要, hasMore=是否有更多, m=可能存在）
                 const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
                 
                 if (append) {
@@ -1869,9 +1866,7 @@
                 setAttNames(data.fileNames || {});
                 return newHasMore;
             } catch (e) {
-                if (e.name === 'AbortError') {
-                    // 请求被取消
-                }
+                if (e.name === 'AbortError') {}
             } finally {
                 if (loadNotesAbortControllerRef.current === controller) {
                     loadNotesAbortControllerRef.current = null;
