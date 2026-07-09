@@ -1039,7 +1039,7 @@
     gap: 12px;
     background: rgba(0, 0, 0, 0.35);
     border-radius: 4px;
-    transition: background 0.2s;
+    opacity: 0.6;
 }
 
 .note-mov-thumb-overlay:hover {
@@ -1050,7 +1050,7 @@
     width: 60px;
     height: 60px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
+    background: var(--faint-contrast);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1058,7 +1058,7 @@
 }
 
 .note-mov-thumb-overlay:hover .note-mov-placeholder-bg {
-    background: rgba(255, 255, 255, 0.35);
+    background: var(--faint-contrast);
     transform: scale(1.05);
 }
 
@@ -1352,4 +1352,29 @@
 
 .note-tab.note-tab-star-mode {
     color: var(--text) !important;
+}
+
+/* 防止滚动穿透 */
+.note-panel {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.note-items {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+}
+
+.note-overlay {
+    overscroll-behavior: contain;
+}
+
+.note-edit-input {
+    touch-action: pan-y pinch-zoom;
+}
+
+/* 确保编辑模式下的 textarea 能接收拖拽事件 */
+.note-item-editing .note-edit-input {
+    pointer-events: auto;
 }

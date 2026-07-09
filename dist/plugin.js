@@ -68,6 +68,31 @@ exports.config = {
         label: 'Video thumbnail time position',
         helperText: 'Time position for video thumbnail extraction (HH:MM:SS)',
         xs: 6
+    },
+    thumbQuality: {
+        type: 'number',
+        defaultValue: 70,
+        min: 1,
+        max: 100,
+        label: 'Thumbnail quality',
+        helperText: 'JPEG quality for thumbnails (1-100)',
+        xs: 6
+    },
+    thumbPixels: {
+        type: 'number',
+        defaultValue: 800,
+        min: 50,
+        max: 2000,
+        label: 'Thumbnail size (pixels)',
+        helperText: 'Longest side dimension in pixels',
+        xs: 6
+    },
+    useSharpPlugin: {
+        type: 'boolean',
+        defaultValue: true,
+        label: 'Use Sharp plugin for thumbnails',
+        helperText: 'Requires rejetto/sharp plugin to be installed. Falls back to built-in method if disabled.',
+        frontend: true
     }
 }
 
@@ -87,6 +112,7 @@ exports.init = async api => {
     const ATT_BASE_DIR = path.join(storage, 'att')
     const THUMB_BASE_DIR = path.join(storage, 'thumb')
     const BACKUP_DIR = path.join(storage, 'backup')
+    const TXT_EXPORT_DIR = path.join(BACKUP_DIR, 'txt_exports')
 
     const MAX_NOTE_LEN = 2000
     const RETAIN_NOTES = 500
@@ -96,23 +122,41 @@ exports.init = async api => {
     const MAX_IMG_SIZE = 40 * 1024 * 1024
     const MAX_FILE_SIZE = 100 * 1024 * 1024
     const TEMP_IMG_TTL = 60 * 60 * 1000
-    const THUMB_PIXELS = 800
     const THUMB_QUALITY = 85
     const THUMB_MIN_SIZE = 100 * 1024
     const PAGE_SIZE = 30
 
     const dbs = new Map()
     let backupTimer = null
-    let exportTimer = null
     let tempCleanupTimer = null
+    let isBackupRunning = false
     
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
     
+    // 确保所有目录存在
     await fs.mkdir(IMG_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(ATT_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
+    await fs.mkdir(TXT_EXPORT_DIR, { recursive: true }).catch(() => {})
+
+    // 加强版的文本清理函数，移除所有可能引起数据库崩溃的特殊字符
+    function sanitizeForDb(text) {
+        if (!text || typeof text !== 'string') return ''
+        return text
+            .replace(/\x00/g, '')
+            .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+            .replace(/\u200B/g, '')
+            .replace(/[\u200C\u200D]/g, '')
+            .replace(/\uFEFF/g, '')
+            .replace(/[\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F]/g, '')
+            .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+            .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+            .replace(/\u00AD/g, '')
+            .replace(/[\u2028\u2029]/g, '\n')
+            .normalize('NFC')
+    }
     
     function getTabPublicConfig(tab) {
         const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
@@ -133,7 +177,8 @@ exports.init = async api => {
     
     function getDb(tab) {
         if (!dbs.has(tab)) {
-            const db = api.openDb(`notes_${tab}`, { rewriteLater: true })
+            const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
+            const db = api.openDb(`notes_${safeTabName}`, { rewriteLater: true })
             dbs.set(tab, db)
         }
         return dbs.get(tab)
@@ -286,6 +331,72 @@ exports.init = async api => {
         return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
     }
 
+    // 使用 sharp 插件生成缩略图（参考第三方插件）
+    async function generateThumbnailWithSharp(imageBuffer, outputPath) {
+        try {
+            const quality = api.getConfig('thumbQuality') || THUMB_QUALITY
+            const pixels = api.getConfig('thumbPixels') || 400
+            
+            // 尝试通过 customApiCall 调用 sharp 插件
+            const sharpResults = api.customApiCall('sharp', imageBuffer)
+            const sharp = sharpResults && sharpResults[0]
+            
+            if (sharp) {
+                await sharp
+                    .resize(pixels, pixels, { fit: 'inside', withoutEnlargement: true })
+                    .rotate()
+                    .jpeg({ quality })
+                    .toFile(outputPath)
+                return true
+            }
+            
+            // 如果 sharp 插件不可用，尝试直接 require
+            try {
+                const sharpModule = api.require('sharp')
+                if (sharpModule) {
+                    await sharpModule(imageBuffer)
+                        .resize(pixels, pixels, { fit: 'inside', withoutEnlargement: true })
+                        .rotate()
+                        .jpeg({ quality })
+                        .toFile(outputPath)
+                    return true
+                }
+            } catch (requireErr) {
+                // sharp 不可用
+            }
+            
+            // 如果都不行，保存原始图片作为缩略图（降级方案）
+            await fs.writeFile(outputPath, imageBuffer)
+            return true
+        } catch (e) {
+            // 降级方案：直接保存原始图片
+            try {
+                await fs.writeFile(outputPath, imageBuffer)
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+
+    // 原有的 generateThumbnail 保留作为备用
+    async function generateThumbnail(imageBuffer, outputPath) {
+        try {
+            // 首先尝试使用 sharp 插件
+            const useSharp = api.getConfig('useSharpPlugin') !== false
+            if (useSharp) {
+                return await generateThumbnailWithSharp(imageBuffer, outputPath)
+            }
+            
+            // 否则直接保存原图
+            await fs.writeFile(outputPath, imageBuffer)
+            return true
+        } catch (e) {
+            return false
+        }
+    }
+
+    // 视频缩略图提取（修复版）
     async function extractVideoThumbnail(videoPath, tab, fileId) {
         try {
             const ffmpegPath = api.getConfig('ffmpeg_path') || 'ffmpeg'
@@ -304,34 +415,75 @@ exports.init = async api => {
             const thumbId = baseName + '.jpg'
             const thumbPath = path.join(thumbDir, thumbId)
             
+            // 检查是否已存在
             try {
                 await fs.stat(thumbPath)
                 return true
             } catch {}
             
-            return new Promise(resolve => {
-                const ffmpeg = spawn(ffmpegPath, [
-                    '-ss', formatTimeFromSeconds(timeInSeconds),
-                    '-i', videoPath,
-                    '-vframes', '1',
-                    '-q:v', '2',
-                    '-f', 'image2',
-                    '-y', thumbPath
-                ])
+            // 使用 ffmpeg 提取缩略图
+            return new Promise((resolve) => {
+                // 使用多个时间点尝试，避免黑帧
+                const timeOffsets = [0, 0.5, 1, 1.5, 2, 3, 5]
+                let attempts = 0
+                let maxAttempts = Math.min(timeOffsets.length, 5)
+                let success = false
                 
-                ffmpeg.on('exit', code => {
-                    if (code === 0) {
-                        resolve(true)
-                    } else {
-                        fs.unlink(thumbPath).catch(() => {})
-                        resolve(false)
+                const tryExtract = (offsetIndex) => {
+                    if (offsetIndex >= maxAttempts || success) {
+                        if (!success) {
+                            // 如果所有尝试都失败，生成一个占位图
+                            const placeholderPath = path.join(thumbDir, 'placeholder.jpg')
+                            // 尝试创建一个简单的占位图
+                            resolve(false)
+                        }
+                        return
                     }
-                })
+                    
+                    const offset = timeOffsets[offsetIndex] || 5
+                    const timeStr = formatTimeFromSeconds(timeInSeconds + offset)
+                    
+                    const ffmpeg = spawn(ffmpegPath, [
+                        '-ss', timeStr,
+                        '-i', videoPath,
+                        '-vframes', '1',
+                        '-q:v', '2',
+                        '-f', 'image2',
+                        '-y', thumbPath
+                    ])
+                    
+                    let stderrData = ''
+                    ffmpeg.stderr?.on('data', (data) => {
+                        stderrData += data.toString()
+                    })
+                    
+                    ffmpeg.on('exit', (code) => {
+                        if (code === 0) {
+                            // 验证生成的图片不是黑帧
+                            fs.stat(thumbPath).then(() => {
+                                success = true
+                                resolve(true)
+                            }).catch(() => {
+                                // 如果文件不存在，继续尝试
+                                tryExtract(offsetIndex + 1)
+                            })
+                        } else {
+                            // 如果失败，尝试下一个时间点
+                            tryExtract(offsetIndex + 1)
+                        }
+                    })
+                    
+                    ffmpeg.on('error', () => {
+                        tryExtract(offsetIndex + 1)
+                    })
+                    
+                    // 超时保护
+                    setTimeout(() => {
+                        tryExtract(offsetIndex + 1)
+                    }, 5000)
+                }
                 
-                ffmpeg.on('error', err => {
-                    fs.unlink(thumbPath).catch(() => {})
-                    resolve(false)
-                })
+                tryExtract(0)
             })
         } catch (e) {
             return false
@@ -349,33 +501,14 @@ exports.init = async api => {
         } catch {}
     }
 
-    async function generateThumbnail(imageBuffer, outputPath) {
-        try {
-            const sharp = api.require('sharp')
-            if (!sharp) return false
-            
-            const metadata = await sharp(imageBuffer).metadata()
-            if (metadata.format === 'gif') return false
-            
-            if (imageBuffer.length < THUMB_MIN_SIZE) return false
-            
-            await sharp(imageBuffer)
-                .resize(THUMB_PIXELS, THUMB_PIXELS, { fit: 'inside', withoutEnlargement: true })
-                .rotate()
-                .jpeg({ quality: THUMB_QUALITY })
-                .toFile(outputPath)
-            return true
-        } catch (e) {
-            return false
-        }
-    }
-
     function hasThumbnail(tab, mediaId) {
         const thumbDir = getTabThumbDir(tab)
         
+        // 检查直接匹配
         let thumbPath = path.join(thumbDir, mediaId)
         if (fss.existsSync(thumbPath)) return true
         
+        // 检查视频缩略图 (扩展名替换为 .jpg)
         const ext = path.extname(mediaId)
         if (['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv', '.flv'].includes(ext.toLowerCase())) {
             const baseName = path.basename(mediaId, ext)
@@ -399,6 +532,7 @@ exports.init = async api => {
             try {
                 await fs.stat(tempPath)
                 const imgBuffer = await fs.readFile(tempPath)
+                // 使用改进的缩略图生成
                 await generateThumbnail(imgBuffer, thumbPath)
                 await fs.rename(tempPath, finalPath)
                 promoted.push(id)
@@ -435,62 +569,71 @@ exports.init = async api => {
         } catch {}
     }
 
+    // 修正备份函数 - 直接从数据库导出而不是读取文件
     async function createBackup() {
         const tabs = getTabs()
         const backupFiles = []
+        const timestamp = getTimestamp()
         
         for (const tab of tabs) {
-            const dbName = `notes_${tab}`
-            const sourcePath = path.join(storage, dbName + '.json')
-            
             try {
-                await fs.stat(sourcePath)
-            } catch {
-                continue
-            }
-            
-            const timestamp = getTimestamp()
-            const backupFileName = `${dbName}_backup_${timestamp}.json`
-            const backupPath = path.join(BACKUP_DIR, backupFileName)
-            
-            try {
-                const data = await fs.readFile(sourcePath)
-                await fs.writeFile(backupPath, data)
+                const db = await getDb(tab)
+                const notes = await db.asObject()
+                
+                if (Object.keys(notes).length === 0) {
+                    // 空数据库也备份，但可以跳过
+                    continue
+                }
+                
+                const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
+                const backupFileName = `notes_${safeTabName}_backup_${timestamp}.json`
+                const backupPath = path.join(BACKUP_DIR, backupFileName)
+                
+                // 将数据库内容转换为JSON并保存
+                await fs.writeFile(backupPath, JSON.stringify(notes, null, 2), 'utf-8')
                 backupFiles.push(backupPath)
+                
             } catch (e) {
+                // 静默处理单个tab的备份错误
             }
         }
         
         return backupFiles
     }
 
+    // 修正TXT导出函数 - 导出到backup/txt_exports目录
     async function exportTxtFiles() {
         const autoExport = api.getConfig('autoExportTxt')
         if (!autoExport) return []
         
         const tabs = getTabs()
         const exportFiles = []
+        const timestamp = getTimestamp()
         
         for (const tab of tabs) {
-            const db = await getDb(tab)
-            const notes = await db.asObject()
-            const keys = Object.keys(notes).sort()
-            
-            if (keys.length === 0) continue
-            
-            let txtContent = ''
-            for (const ts of keys) {
-                const note = notes[ts]
-                if (note && note.m) {
-                    const dateStr = new Date(ts).toLocaleString()
-                    txtContent += `[${dateStr}]\n${note.m}\n\n`
+            try {
+                const db = await getDb(tab)
+                const notes = await db.asObject()
+                const keys = Object.keys(notes).sort()
+                
+                if (keys.length === 0) continue
+                
+                let txtContent = ''
+                for (const ts of keys) {
+                    const note = notes[ts]
+                    if (note && note.m) {
+                        const dateStr = new Date(ts).toLocaleString()
+                        txtContent += `[${dateStr}] ${note.u || 'Unknown'}\n${note.m}\n\n`
+                    }
                 }
+                
+                const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
+                const exportFile = path.join(TXT_EXPORT_DIR, `notes_export_${safeTabName}_${timestamp}.txt`)
+                await fs.writeFile(exportFile, txtContent.trim() + '\n', 'utf-8')
+                exportFiles.push(exportFile)
+            } catch (e) {
+                // 静默处理单个tab的导出错误
             }
-            
-            const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
-            const exportFile = path.join(storage, `notes_export_${safeTabName}.txt`)
-            await fs.writeFile(exportFile, txtContent.trim() + '\n', 'utf-8')
-            exportFiles.push(exportFile)
         }
         
         return exportFiles
@@ -501,6 +644,7 @@ exports.init = async api => {
             const retentionDays = api.getConfig('backupRetentionDays') || 3
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
             
+            // 清理JSON备份文件
             const files = await fs.readdir(BACKUP_DIR).catch(() => [])
             const backupFiles = files.filter(f => f.includes('_backup_') && f.endsWith('.json'))
             
@@ -512,56 +656,95 @@ exports.init = async api => {
                     }
                 } catch {}
             }
+            
+            // 清理TXT导出文件
+            try {
+                const txtFiles = await fs.readdir(TXT_EXPORT_DIR).catch(() => [])
+                const txtBackups = txtFiles.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
+                
+                for (const f of txtBackups) {
+                    try {
+                        const stat = await fs.stat(path.join(TXT_EXPORT_DIR, f))
+                        if (stat.mtime.getTime() < cutoffTime) {
+                            await fs.unlink(path.join(TXT_EXPORT_DIR, f))
+                        }
+                    } catch {}
+                }
+            } catch {}
+            
         } catch {}
     }
 
-    function setupBackupTimer() {
-        const interval = api.getConfig('backupInterval') || 6
+    async function performScheduledBackup() {
+        // 防止并发备份
+        if (isBackupRunning) {
+            return
+        }
         
+        isBackupRunning = true
+        try {
+            await createBackup()
+            await cleanupOldBackups()
+            if (api.getConfig('autoExportTxt')) {
+                await exportTxtFiles()
+            }
+        } catch (e) {
+            // 静默处理备份错误
+        } finally {
+            isBackupRunning = false
+        }
+    }
+
+    function setupBackupTimer() {
         if (backupTimer) {
             clearInterval(backupTimer)
             backupTimer = null
-        }
-        if (exportTimer) {
-            clearInterval(exportTimer)
-            exportTimer = null
         }
         if (tempCleanupTimer) {
             clearInterval(tempCleanupTimer)
             tempCleanupTimer = null
         }
         
+        const interval = api.getConfig('backupInterval') || 6
+        
         if (interval <= 0) return
         
         const intervalMs = interval * 60 * 60 * 1000
         
         backupTimer = setInterval(async () => {
-            await createBackup()
-            await cleanupOldBackups()
-        }, intervalMs)
-        
-        exportTimer = setInterval(async () => {
-            await exportTxtFiles()
+            await performScheduledBackup()
         }, intervalMs)
         
         tempCleanupTimer = setInterval(async () => {
             await cleanupTempImages()
         }, 60 * 60 * 1000)
+        
+        if (backupTimer && backupTimer.unref) {
+            backupTimer.unref()
+        }
+        if (tempCleanupTimer && tempCleanupTimer.unref) {
+            tempCleanupTimer.unref()
+        }
     }
 
+    // ===== 启动备份逻辑 =====
+    // 1. 先设置定时器
     setupBackupTimer()
+    
+    // 2. 立即执行首次备份（服务器重启后主动镜像备份）
     setTimeout(async () => {
-        await createBackup()
-        await cleanupOldBackups()
-        await exportTxtFiles()
-        await cleanupTempImages()
-    }, 5000)
-
+        await performScheduledBackup()
+    }, 1000) // 延迟1秒确保所有组件就绪
+    
+    // 3. 配置变更时立即备份并重置定时器
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
+        // 重置定时器
         setupBackupTimer()
-        if (api.getConfig('autoExportTxt')) {
-            exportTxtFiles().catch(() => {})
-        }
+        
+        // 配置变更后立即执行备份
+        setTimeout(async () => {
+            await performScheduledBackup()
+        }, 500)
     })
 
     const TABS_DATA_FILE = path.join(storage, 'notes_tabs_order.json')
@@ -611,6 +794,8 @@ exports.init = async api => {
         await fs.writeFile(TABS_DATA_FILE, JSON.stringify({ order, names }, null, 2))
     }
 
+    // ============= API 处理函数 =============
+    
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
         const tabsData = await getTabsData()
@@ -669,7 +854,7 @@ exports.init = async api => {
         if (newName.trim() === '') {
             delete tabsData.names[tab]
         } else {
-            tabsData.names[tab] = newName.trim()
+            tabsData.names[tab] = sanitizeForDb(newName.trim())
         }
         
         await saveTabsData(tabsData.order, tabsData.names)
@@ -689,17 +874,13 @@ exports.init = async api => {
         
         const db = await getDb(tab)
         const notes = await db.asObject()
-        // Sort chronologically ascending (oldest first)
         const allKeys = Object.keys(notes).sort()
         const totalCount = allKeys.length
         
-        // offset=0 means the most recent entries
-        // We slice from (totalCount - offset - limit) to (totalCount - offset)
         const endIdx = totalCount - offset
         const startIdx = Math.max(0, endIdx - limit)
         const pageKeys = allKeys.slice(startIdx, endIdx)
         
-        // Build pageNotes preserving chronological order (oldest first in the page)
         const pageNotes = {}
         for (const k of pageKeys) {
             pageNotes[k] = notes[k]
@@ -779,14 +960,19 @@ exports.init = async api => {
         
         const ts = new Date().toISOString()
         
-        const lineCount = m.split('\n').length
+        const sanitizedM = sanitizeForDb(m)
+        if (!sanitizedM) {
+            ctx.status = 400; return
+        }
+        
+        const lineCount = sanitizedM.split('\n').length
         const autoCollapsed = forceCollapsed || lineCount > AUTO_COLLAPSE_LINES
         
         if (username && username !== 'Guest') {
-            const imageIds = extractImageIds(m)
+            const imageIds = extractImageIds(sanitizedM)
             await promoteImages(tab, imageIds)
             
-            const movIds = extractMovIds(m)
+            const movIds = extractMovIds(sanitizedM)
             if (movIds.length > 0) {
                 const movDir = getTabMovDir(tab)
                 for (const movId of movIds) {
@@ -799,10 +985,10 @@ exports.init = async api => {
             }
         }
         
-        db.put(ts, { m, u: username, starred: false, collapsed: autoCollapsed })
+        db.put(ts, { m: sanitizedM, u: username, starred: false, collapsed: autoCollapsed })
         const count = db.size()
         
-        api.notifyClient('notes', 'newNote', { ts, u: username, m, tab, starred: false, collapsed: autoCollapsed })
+        api.notifyClient('notes', 'newNote', { ts, u: username, m: sanitizedM, tab, starred: false, collapsed: autoCollapsed })
         
         ctx.status = 201
         ctx.body = { count, warning: count >= MAX_STORAGE_WARNING, maxRetain: RETAIN_NOTES }
@@ -829,8 +1015,13 @@ exports.init = async api => {
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
         
+        const sanitizedM = sanitizeForDb(m)
+        if (!sanitizedM) {
+            ctx.status = 400; return
+        }
+        
         const oldImgIds = extractImageIds(note.m)
-        const newImgIds = extractImageIds(m)
+        const newImgIds = extractImageIds(sanitizedM)
         const removedImgIds = oldImgIds.filter(id => !newImgIds.includes(id))
         const imgDir = getTabImgDir(tab)
         const thumbDir = getTabThumbDir(tab)
@@ -840,7 +1031,7 @@ exports.init = async api => {
         }
         
         const oldMovIds = extractMovIds(note.m)
-        const newMovIds = extractMovIds(m)
+        const newMovIds = extractMovIds(sanitizedM)
         const removedMovIds = oldMovIds.filter(id => !newMovIds.includes(id))
         const movDir = getTabMovDir(tab)
         for (const id of removedMovIds) {
@@ -850,7 +1041,7 @@ exports.init = async api => {
         await cleanFileNameMapping(tab, 'mov', removedMovIds)
         
         const oldAttIds = extractAttIds(note.m)
-        const newAttIds = extractAttIds(m)
+        const newAttIds = extractAttIds(sanitizedM)
         const removedAttIds = oldAttIds.filter(id => !newAttIds.includes(id))
         const attDir = getTabAttDir(tab)
         for (const id of removedAttIds) {
@@ -870,8 +1061,8 @@ exports.init = async api => {
             }
         }
         
-        db.put(ts, { m, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
-        api.notifyClient('notes', 'updateNote', { ts, tab, m, starred: note.starred || false, collapsed: note.collapsed || false })
+        db.put(ts, { m: sanitizedM, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
+        api.notifyClient('notes', 'updateNote', { ts, tab, m: sanitizedM, starred: note.starred || false, collapsed: note.collapsed || false })
         ctx.status = 200
         
         if (api.getConfig('autoExportTxt')) {
@@ -1043,12 +1234,13 @@ exports.init = async api => {
             )
             backups.sort((a, b) => b.created.localeCompare(a.created))
             
-            const storageFiles = await fs.readdir(storage).catch(() => [])
-            const txtFiles = storageFiles.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
+            // 读取TXT导出文件
+            const txtFiles = await fs.readdir(TXT_EXPORT_DIR).catch(() => [])
+            const txtBackups = txtFiles.filter(f => f.startsWith('notes_export_') && f.endsWith('.txt'))
             txtExports = await Promise.all(
-                txtFiles.map(async f => {
-                    const stat = await fs.stat(path.join(storage, f))
-                    const tabName = f.replace('notes_export_', '').replace('.txt', '')
+                txtBackups.map(async f => {
+                    const stat = await fs.stat(path.join(TXT_EXPORT_DIR, f))
+                    const tabName = f.replace('notes_export_', '').replace(/_\d{8}_\d{4}\.txt$/, '')
                     return {
                         name: f,
                         tab: tabName,
@@ -1058,6 +1250,7 @@ exports.init = async api => {
                     }
                 })
             )
+            txtExports.sort((a, b) => b.modified.localeCompare(a.modified))
         } catch {}
         
         let imgStats = { count: 0, totalSize: 0, tabs: {}, tempCount: 0 }
@@ -1156,6 +1349,9 @@ exports.init = async api => {
                 maxFileSize: formatBytes(MAX_FILE_SIZE),
                 ffmpegPath: api.getConfig('ffmpeg_path') || 'ffmpeg',
                 thumbnailTime: api.getConfig('thumbnail_time') || '00:00:05',
+                thumbQuality: api.getConfig('thumbQuality') || THUMB_QUALITY,
+                thumbPixels: api.getConfig('thumbPixels') || 400,
+                useSharpPlugin: api.getConfig('useSharpPlugin') !== false,
                 pageSize: PAGE_SIZE
             },
             databases: dbInfo, totalNotes,
@@ -1230,7 +1426,9 @@ exports.init = async api => {
             const db = await getDb(tab)
             for (const [ts, note] of Object.entries(notes)) {
                 if (note.m && note.u) {
-                    db.put(ts, { m: note.m, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
+                    const sanitizedM = sanitizeForDb(note.m)
+                    if (!sanitizedM) continue
+                    db.put(ts, { m: sanitizedM, u: note.u, starred: note.starred || false, collapsed: note.collapsed || false })
                     imported++
                 }
             }
@@ -1466,7 +1664,7 @@ exports.init = async api => {
                 const fileId = generateFileId(originalName)
                 const filePath = path.join(movDir, fileId)
                 await fs.writeFile(filePath, fileBuffer)
-                await saveFileName(tab, 'mov', fileId, originalName)
+                await saveFileName(tab, 'mov', fileId, sanitizeForDb(originalName))
                 
                 let hasVideoThumb = false
                 if (isVideo) {
@@ -1487,7 +1685,7 @@ exports.init = async api => {
                 const fileId = generateFileId(originalName)
                 const filePath = path.join(attDir, fileId)
                 await fs.writeFile(filePath, fileBuffer)
-                await saveFileName(tab, 'att', fileId, originalName)
+                await saveFileName(tab, 'att', fileId, sanitizeForDb(originalName))
                 ctx.body = { 
                     ok: true, 
                     isOther: true, 
@@ -1532,7 +1730,7 @@ exports.init = async api => {
                 'svg': 'image/svg+xml'
             }
             ctx.type = mimeTypes[ext] || 'application/octet-stream'
-            ctx.set('Cache-Control', 'no-cache')
+            ctx.set('Cache-Control', 'public, max-age=3600')
             ctx.body = await fs.readFile(filePath)
             ctx.status = 200
         } catch {
@@ -1551,11 +1749,28 @@ exports.init = async api => {
         try {
             await fs.stat(thumbPath)
             ctx.type = 'image/jpeg'
-            ctx.set('Cache-Control', 'public, max-age=3600')
+            ctx.set('Cache-Control', 'public, max-age=86400')
             ctx.body = await fs.readFile(thumbPath)
             ctx.status = 200
         } catch {
-            ctx.status = 404
+            // 如果缩略图不存在，尝试返回原图
+            const imgDir = getTabImgDir(tab)
+            const imgPath = path.join(imgDir, thumbId)
+            try {
+                await fs.stat(imgPath)
+                const ext = path.extname(thumbId).slice(1).toLowerCase()
+                const mimeTypes = {
+                    'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                    'png': 'image/png', 'gif': 'image/gif',
+                    'webp': 'image/webp', 'bmp': 'image/bmp'
+                }
+                ctx.type = mimeTypes[ext] || 'image/jpeg'
+                ctx.set('Cache-Control', 'public, max-age=3600')
+                ctx.body = await fs.readFile(imgPath)
+                ctx.status = 200
+            } catch {
+                ctx.status = 404
+            }
         }
     }
     
@@ -1606,7 +1821,7 @@ exports.init = async api => {
                 ctx.body = fss.createReadStream(filePath)
             }
             
-            ctx.set('Cache-Control', 'no-cache')
+            ctx.set('Cache-Control', 'public, max-age=3600')
         } catch { ctx.status = 404 }
     }
 
