@@ -146,7 +146,7 @@ exports.init = async api => {
         await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ order: tabs, names: {} }, null, 2))
     }
 
-    // ===== 新增：同步 tabs_map.json 的輔助函數 =====
+    // ===== 同步 tabs_map.json 的輔助函數 =====
     async function syncTabsMapWithConfig() {
         const tabsMap = await loadTabsMap()
         const configTabs = getTabs()
@@ -181,7 +181,6 @@ exports.init = async api => {
         
         return tabsMap
     }
-    // ===== 結束新增 =====
 
     // 加強版的文本清理函數
     function sanitizeForDb(text) {
@@ -917,22 +916,21 @@ exports.init = async api => {
 
     setupBackupTimer()
     
-    // ===== 修改：訂閱 tabList 變更，自動同步 _tabs_map.json =====
+    // ===== 訂閱 tabList 變更，自動同步 _tabs_map.json =====
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
         setupBackupTimer()
         setTimeout(async () => {
             await performScheduledBackup()
         }, 500)
-        // 新增：當 tabList 變更時，同步 _tabs_map.json 並通知前端
+        // 當 tabList 變更時，同步 _tabs_map.json 並通知前端
         if (api.getConfig('tabList')) {
             syncTabsMapWithConfig().then(tabsMap => {
                 api.notifyClient('notes', 'tabsReordered', { tabs: tabsMap.order })
             }).catch(() => {})
         }
     })
-    // ===== 結束修改 =====
 
-    // ===== 修改：getTabInfo - 確保合併 tabsMap.order 和 config tabs =====
+    // ===== getTabInfo - 確保合併 tabsMap.order 和 config tabs =====
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
         // 先同步 tabs_map.json，確保新添加的 tab 出現在 order 中
@@ -972,36 +970,33 @@ exports.init = async api => {
         }
         ctx.status = 200
     }
-    // ===== 結束修改 =====
 
-async function renameTab(ctx) {
-    const username = getCurrentUsername(ctx)
-    if (!username || !isAllowed(username)) { ctx.status = 403; return }
-    
-    let body = ctx.state.params || ctx.request?.body || {}
-    const { tab, newName } = body
-    
-    // 修改：只有當 newName 完全缺失（undefined/null）時才拒絕，空字符串是合法的
-    if (!tab || newName == null) {
-        ctx.status = 400; return
+    async function renameTab(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+        
+        let body = ctx.state.params || ctx.request?.body || {}
+        const { tab, newName } = body
+        
+        if (!tab || newName == null) {
+            ctx.status = 400; return
+        }
+        
+        const tabsMap = await loadTabsMap()
+        const trimmed = (typeof newName === 'string') ? newName.trim() : ''
+        
+        if (trimmed === '') {
+            delete tabsMap.names[tab]
+        } else {
+            tabsMap.names[tab] = sanitizeForDb(trimmed)
+        }
+        
+        await saveTabsMap(tabsMap)
+        const notifyName = trimmed || tab
+        api.notifyClient('notes', 'tabRenamed', { tab, newName: notifyName })
+        ctx.body = { ok: true, tab, newName: notifyName }
+        ctx.status = 200
     }
-    
-    const tabsMap = await loadTabsMap()
-    const trimmed = (typeof newName === 'string') ? newName.trim() : ''
-    
-    if (trimmed === '') {
-        delete tabsMap.names[tab]
-    } else {
-        tabsMap.names[tab] = sanitizeForDb(trimmed)
-    }
-    
-    await saveTabsMap(tabsMap)
-    // 發送給前端的 newName：如果是空則發送原始 tab 名（讓前端知道要恢復默認）
-    const notifyName = trimmed || tab
-    api.notifyClient('notes', 'tabRenamed', { tab, newName: notifyName })
-    ctx.body = { ok: true, tab, newName: notifyName }
-    ctx.status = 200
-}
 
     async function listNotes(ctx) {
         const username = getCurrentUsername(ctx)
@@ -1135,10 +1130,6 @@ async function renameTab(ctx) {
         
         ctx.status = 201
         ctx.body = { count: newCount, warning: newCount >= MAX_STORAGE_WARNING }
-        
-        if (api.getConfig('autoExportTxt')) {
-            exportTxtFiles().catch(() => {})
-        }
     }
 
     async function updateNote(ctx) {
@@ -1212,10 +1203,6 @@ async function renameTab(ctx) {
         
         api.notifyClient('notes', 'updateNote', { ts, tab, m: sanitizedM, starred: note.starred || false, collapsed: note.collapsed || false })
         ctx.status = 200
-        
-        if (api.getConfig('autoExportTxt')) {
-            exportTxtFiles().catch(() => {})
-        }
     }
 
     async function toggleStar(ctx) {
@@ -1313,10 +1300,6 @@ async function renameTab(ctx) {
         await deleteNoteFromTab(tab, ts)
         api.notifyClient('notes', 'deleteNote', { ts, tab })
         ctx.status = 200
-        
-        if (api.getConfig('autoExportTxt')) {
-            exportTxtFiles().catch(() => {})
-        }
     }
 
     async function reorderTabs(ctx) {
@@ -1637,10 +1620,6 @@ async function renameTab(ctx) {
             }
         }
         
-        if (api.getConfig('autoExportTxt')) {
-            exportTxtFiles().catch(() => {})
-        }
-        
         ctx.body = { ok: true, imported, tabs: Object.keys(body.data) }
         ctx.status = 200
     }
@@ -1741,10 +1720,6 @@ async function renameTab(ctx) {
         await clearTabData(tab)
         
         api.notifyClient('notes', 'tabCleared', { tab })
-        
-        if (api.getConfig('autoExportTxt')) {
-            exportTxtFiles().catch(() => {})
-        }
         
         ctx.body = { ok: true, cleared: count, tab }
         ctx.status = 200
