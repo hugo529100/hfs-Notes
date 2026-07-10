@@ -265,7 +265,6 @@
             };
         }, [editing, ts, effectiveTab, editVal]);
         
-        // 記憶每個 media 的 videoThumbPath，防止重新渲染時丟失
         const mediaThumbPaths = useMemo(() => {
             const paths = {};
             if (!thumbMap) return paths;
@@ -535,7 +534,6 @@
             let lastIndex = 0;
             
             const allMatches = [];
-            // 一次性扫描所有标记，避免多次正则导致的性能问题
             const unifiedRegex = /\[(img|mov|att):([^\]]+)\]/g;
             let match;
             while ((match = unifiedRegex.exec(text)) !== null) {
@@ -674,7 +672,7 @@
                                     }, 50);
                                 }
                             },
-                                                                h('div', { className: 'note-mov-thumb-cover' },
+                                h('div', { className: 'note-mov-thumb-cover' },
                                     h('img', {
                                         src: videoThumbPath,
                                         alt: displayName,
@@ -813,24 +811,22 @@
             });
         };
 
-const getCoverImage = (content) => {
-    if (!content) return null;
-    // 先尝试图片
-    const imgMatch = content.match(/\[img:(.+?)\]/);
-    if (imgMatch) return { type: 'image', id: imgMatch[1] };
-    // 再尝试视频
-    const movMatch = content.match(/\[mov:(.+?):(.+?)\]/);
-    if (movMatch) {
-        const fileId = movMatch[1];
-        const ext = fileId.split('.').pop()?.toLowerCase();
-        const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
-        if (videoExts.includes(ext)) {
-            const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
-            return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg` };
-        }
-    }
-    return null;
-};
+        const getCoverImage = (content) => {
+            if (!content) return null;
+            const imgMatch = content.match(/\[img:(.+?)\]/);
+            if (imgMatch) return { type: 'image', id: imgMatch[1] };
+            const movMatch = content.match(/\[mov:(.+?):(.+?)\]/);
+            if (movMatch) {
+                const fileId = movMatch[1];
+                const ext = fileId.split('.').pop()?.toLowerCase();
+                const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
+                if (videoExts.includes(ext)) {
+                    const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
+                    return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg` };
+                }
+            }
+            return null;
+        };
 
         const getPlainText = (content) => {
             if (!content) return '';
@@ -945,27 +941,27 @@ const getCoverImage = (content) => {
         const noteLength = displayContent ? displayContent.length : 0;
         const lineCount = displayContent ? displayContent.split('\n').length : 0;
         const showFooter = !isFullscreenColumn && !isCollapsed && lineCount > 10;
-const coverData = getCoverImage(displayContent);
-const coverImageId = coverData?.id || null;
-const coverType = coverData?.type || null;
-const plainText = getPlainText(displayContent);
+        const coverData = getCoverImage(displayContent);
+        const coverImageId = coverData?.id || null;
+        const coverType = coverData?.type || null;
+        const plainText = getPlainText(displayContent);
 
-let coverSrc = '';
-let coverExt = '';
-let coverIsGif = false;
-let coverHasThumb = false;
+        let coverSrc = '';
+        let coverExt = '';
+        let coverIsGif = false;
+        let coverHasThumb = false;
 
-if (coverType === 'image') {
-    coverExt = coverImageId.split('.').pop()?.toLowerCase();
-    coverIsGif = coverExt === 'gif';
-    coverHasThumb = !coverIsGif && thumbMap && thumbMap[coverImageId];
-    coverSrc = coverHasThumb 
-        ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
-        : `/~/notes/img/${effectiveTab}/${coverImageId}`;
-} else if (coverType === 'video') {
-    coverSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
-    coverHasThumb = true; // 视频始终有缩略图
-}
+        if (coverType === 'image') {
+            coverExt = coverImageId.split('.').pop()?.toLowerCase();
+            coverIsGif = coverExt === 'gif';
+            coverHasThumb = !coverIsGif && thumbMap && thumbMap[coverImageId];
+            coverSrc = coverHasThumb 
+                ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
+                : `/~/notes/img/${effectiveTab}/${coverImageId}`;
+        } else if (coverType === 'video') {
+            coverSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
+            coverHasThumb = true;
+        }
         
         const canManage = isAdminUser || isOwner;
         
@@ -1035,10 +1031,8 @@ if (coverType === 'image') {
                             },
                             title: coverIsGif ? 'GIF Image' : 'Cover Image'
                         }),
-                        plainText && h('div', { className: 'note-cover-overlay' },
-                            h('div', { className: 'note-cover-text' }, plainText)
-                        ),
-                        !plainText && h('div', { className: 'note-cover-overlay' })
+                        h('div', { className: 'note-cover-overlay' }),
+                        plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
                     )
                 )
             :
@@ -1072,6 +1066,8 @@ if (coverType === 'image') {
     }
 
     function NotePanel({ onClose }) {
+        const CACHE_TTL = 5 * 60 * 1000; // 缓存有效期：5分钟
+        
         const getCachedInput = () => {
             try {
                 return localStorage.getItem(CACHE_INPUT_TEXT) || '';
@@ -1120,11 +1116,13 @@ if (coverType === 'image') {
         const scrollRestoreRef = useRef(0);
         const sentinelRef = useRef(null);
         const observerRef = useRef(null);
-        const fullscreenChangeHandlerRef = useRef(null);
         const isFullscreenRef = useRef(false);
         const fullscreenGridRef = useRef(null);
         const esRef = useRef(null);
         const loadNotesAbortControllerRef = useRef(null);
+        
+        // Tab内容缓存（关闭note时保留，不清除）
+        const tabCacheRef = useRef({});
         
         const inputRef = useRef(null);
         const listRef = useRef(null);
@@ -1161,12 +1159,24 @@ if (coverType === 'image') {
         useEffect(() => {
             if (!activeTab) return;
             
-            setNotes([]);
-            setHasMore(false);
-            setCurrentOffset(0);
-            setThumbMap({});
-            setAttNames({});
-            fullContentFallbackRef.current = {};
+            // 检查缓存
+            const cached = tabCacheRef.current[activeTab];
+            if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+                // 缓存有效，立即显示
+                setNotes(cached.notes);
+                setThumbMap(cached.thumbMap);
+                setAttNames(cached.attNames);
+                setHasMore(cached.hasMore);
+                setCurrentOffset(cached.offset);
+            } else {
+                // 无缓存或已过期
+                setNotes([]);
+                setHasMore(false);
+                setCurrentOffset(0);
+                setThumbMap({});
+                setAttNames({});
+                fullContentFallbackRef.current = {};
+            }
             
             if (loadNotesAbortControllerRef.current) {
                 loadNotesAbortControllerRef.current.abort();
@@ -1210,6 +1220,7 @@ if (coverType === 'image') {
             
             shouldAutoScrollRef.current = true;
             
+            // 始终从服务器加载最新数据
             loadNotes(activeTab, false);
             
             setupSSE(activeTab);
@@ -1230,16 +1241,15 @@ if (coverType === 'image') {
                     esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
                     esRef.current = null;
                 }
-                if (fullscreenChangeHandlerRef.current) {
-                    document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
-                    fullscreenChangeHandlerRef.current = null;
-                }
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
                 globalEditTextareaRef = null;
                 globalEditValue = '';
                 globalSetEditValue = null;
                 globalActiveTab = '';
+                // 组件卸载时清理缓存
+                tabCacheRef.current = {};
+                fullContentFallbackRef.current = {};
             };
         }, []);
 
@@ -1314,6 +1324,7 @@ if (coverType === 'image') {
                         setNotes([]);
                         setHasMore(false);
                         setCurrentOffset(0);
+                        delete tabCacheRef.current[data.tab];
                         loadTabs();
                     }
                 });
@@ -1340,18 +1351,6 @@ if (coverType === 'image') {
             const handleResize = () => setIsMobile(window.innerWidth <= 768);
             window.addEventListener('resize', handleResize);
             return () => window.removeEventListener('resize', handleResize);
-        }, []);
-
-        useEffect(() => {
-            return () => {
-                if (fullscreenChangeHandlerRef.current) {
-                    document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
-                    fullscreenChangeHandlerRef.current = null;
-                }
-                if (document.fullscreenElement) {
-                    document.exitFullscreen?.().catch(() => {});
-                }
-            };
         }, []);
 
         useEffect(() => {
@@ -1659,6 +1658,7 @@ if (coverType === 'image') {
         }, [tabNames]);
 
         const handleClose = () => {
+            // 只清理连接类资源，保留数据缓存
             if (observerRef.current) {
                 observerRef.current.disconnect();
                 observerRef.current = null;
@@ -1667,16 +1667,54 @@ if (coverType === 'image') {
                 loadNotesAbortControllerRef.current.abort();
                 loadNotesAbortControllerRef.current = null;
             }
-            if (fullscreenChangeHandlerRef.current) {
-                document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
-                fullscreenChangeHandlerRef.current = null;
+            if (esRef.current) {
+                esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
+                esRef.current = null;
             }
-            if (document.fullscreenElement) {
-                document.exitFullscreen?.().catch(() => {});
-            }
+            // 清理全局编辑状态
+            globalEditingNoteTs = null;
+            globalEditingTab = null;
+            globalEditTextareaRef = null;
+            globalEditValue = '';
+            globalSetEditValue = null;
+            globalActiveTab = '';
+            // 不清理 tabCacheRef 和 fullContentFallbackRef，保留缓存
             setClosing(true);
             setTimeout(onClose, 300);
         };
+
+        const isDesktopDevice = useCallback(() => {
+            return window.innerWidth > 768 && !('ontouchstart' in window);
+        }, []);
+
+        useEffect(() => {
+            if (!isDesktopDevice()) return;
+            
+            const handleClickOutside = (e) => {
+                const panel = panelRef.current;
+                if (!panel || closing) return;
+                
+                const rect = panel.getBoundingClientRect();
+                const margin = 100;
+                
+                const isOutside = (
+                    e.clientX < rect.left - margin ||
+                    e.clientX > rect.right + margin ||
+                    e.clientY < rect.top - margin ||
+                    e.clientY > rect.bottom + margin
+                );
+                
+                if (isOutside) {
+                    handleClose();
+                }
+            };
+            
+            document.addEventListener('click', handleClickOutside);
+            
+            return () => {
+                document.removeEventListener('click', handleClickOutside);
+            };
+        }, [closing, isDesktopDevice]);
 
         const toggleFullscreen = useCallback(() => {
             const el = document.documentElement;
@@ -1686,30 +1724,11 @@ if (coverType === 'image') {
                     .then(() => {
                         setIsFullscreen(true);
                         setFullscreenStarFilter(false);
-                        
-                        if (fullscreenChangeHandlerRef.current) {
-                            document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
-                        }
-                        
-                        fullscreenChangeHandlerRef.current = () => {
-                            if (!document.fullscreenElement) {
-                                el.requestFullscreen?.().catch(() => {
-                                    setIsFullscreen(false);
-                                });
-                            }
-                        };
-                        
-                        document.addEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
                     })
                     .catch(err => {
                         HFS.toast("Enter fullscreen failed: " + err, 'error');
                     });
             } else {
-                if (fullscreenChangeHandlerRef.current) {
-                    document.removeEventListener('fullscreenchange', fullscreenChangeHandlerRef.current);
-                    fullscreenChangeHandlerRef.current = null;
-                }
-                
                 document.exitFullscreen?.();
                 setIsFullscreen(false);
                 setFullscreenStarFilter(false);
@@ -1900,15 +1919,31 @@ if (coverType === 'image') {
                     setNotes(prev => {
                         const existingTs = new Set(prev.map(n => n.ts));
                         const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
-                        return [...newNotes, ...prev];
+                        const combined = [...newNotes, ...prev];
+                        tabCacheRef.current[tab] = {
+                            notes: combined,
+                            thumbMap: { ...thumbMap, ...newThumbMap },
+                            attNames: { ...attNames, ...newFileNames },
+                            hasMore: data.hasMore || false,
+                            offset: offset + notesWithTab.length,
+                            timestamp: Date.now()
+                        };
+                        return combined;
                     });
-                    // append 時合併 thumbMap
                     setThumbMap(prev => ({ ...prev, ...newThumbMap }));
                     setAttNames(prev => ({ ...prev, ...newFileNames }));
                 } else {
                     setNotes(notesWithTab);
                     setThumbMap(newThumbMap);
                     setAttNames(newFileNames);
+                    tabCacheRef.current[tab] = {
+                        notes: notesWithTab,
+                        thumbMap: newThumbMap,
+                        attNames: newFileNames,
+                        hasMore: data.hasMore || false,
+                        offset: notesWithTab.length,
+                        timestamp: Date.now()
+                    };
                 }
                 const newHasMore = data.hasMore || false;
                 setHasMore(newHasMore);
@@ -1921,7 +1956,7 @@ if (coverType === 'image') {
                     loadNotesAbortControllerRef.current = null;
                 }
             }
-        }, []);
+        }, [thumbMap, attNames]);
 
         const loadOtherTabNotes = useCallback(async (tab) => {
             if (!tab) return;
@@ -2279,7 +2314,7 @@ if (coverType === 'image') {
                             setTimeout(() => searchInputRef.current?.focus(), 50);
                         },
                         title: 'Search'
-                    }, showSearch ? '\u2715' : '\u03D8'),
+                    }, showSearch ? 'ⓢ' : 'ⓢ'),
                     searchTerm && h('span', { className: 'note-header-stats' },
                         `${filteredNotes.length} notes / ${totalMatches} matches`
                     ),
