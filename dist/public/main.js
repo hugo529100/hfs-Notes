@@ -265,6 +265,24 @@
             };
         }, [editing, ts, effectiveTab, editVal]);
         
+        // 記憶每個 media 的 videoThumbPath，防止重新渲染時丟失
+        const mediaThumbPaths = useMemo(() => {
+            const paths = {};
+            if (!thumbMap) return paths;
+            const text = fullContent || summaryText || '';
+            const unifiedRegex = /\[(mov):([^\]]+)\]/g;
+            let match;
+            while ((match = unifiedRegex.exec(text)) !== null) {
+                const payload = match[2];
+                const ci = payload.indexOf(':');
+                const fid = ci > -1 ? payload.substring(0, ci) : payload;
+                if (thumbMap[fid]) {
+                    paths[fid] = getVideoThumbPath(effectiveTab, fid);
+                }
+            }
+            return paths;
+        }, [thumbMap, fullContent, summaryText, effectiveTab]);
+
         const loadFullContent = useCallback(async () => {
             if (fullContent !== null || loadingFull || !hasMoreContent) return;
             setLoadingFull(true);
@@ -612,7 +630,7 @@
                     const isAudio = audioExts.includes(ext);
                     const displayName = part.name || attNames[part.fileId] || part.fileId;
                     const hasThumb = thumbMap && thumbMap[part.fileId];
-                    const videoThumbPath = hasThumb ? getVideoThumbPath(effectiveTab, part.fileId) : null;
+                    const videoThumbPath = hasThumb ? (mediaThumbPaths[part.fileId] || getVideoThumbPath(effectiveTab, part.fileId)) : null;
                     
                     if (isAudio) {
                         return h('div', { 
@@ -656,11 +674,12 @@
                                     }, 50);
                                 }
                             },
-                                videoPlaying ? null : h('div', { className: 'note-mov-thumb-cover' },
+                                                                h('div', { className: 'note-mov-thumb-cover' },
                                     h('img', {
                                         src: videoThumbPath,
                                         alt: displayName,
                                         className: 'note-mov-thumb-img',
+                                        loading: 'lazy',
                                         onError: function(e) {
                                             const wrapper = e.target.closest('.note-mov-wrapper');
                                             if (wrapper) {
@@ -686,7 +705,7 @@
                                 ),
                                 h('div', { 
                                     className: 'note-mov-placeholder', 
-                                    style: { display: videoPlaying ? 'none' : 'none' }
+                                    style: { display: 'none' }
                                 },
                                     h('div', { className: 'note-mov-placeholder-bg' },
                                         h('span', { className: 'note-mov-play-icon' }, '\u25B6')
@@ -794,12 +813,24 @@
             });
         };
 
-        const getCoverImage = (content) => {
-            if (!content) return null;
-            const match = content.match(/\[img:(.+?)\]/);
-            if (!match) return null;
-            return match[1];
-        };
+const getCoverImage = (content) => {
+    if (!content) return null;
+    // 先尝试图片
+    const imgMatch = content.match(/\[img:(.+?)\]/);
+    if (imgMatch) return { type: 'image', id: imgMatch[1] };
+    // 再尝试视频
+    const movMatch = content.match(/\[mov:(.+?):(.+?)\]/);
+    if (movMatch) {
+        const fileId = movMatch[1];
+        const ext = fileId.split('.').pop()?.toLowerCase();
+        const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
+        if (videoExts.includes(ext)) {
+            const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
+            return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg` };
+        }
+    }
+    return null;
+};
 
         const getPlainText = (content) => {
             if (!content) return '';
@@ -914,15 +945,27 @@
         const noteLength = displayContent ? displayContent.length : 0;
         const lineCount = displayContent ? displayContent.split('\n').length : 0;
         const showFooter = !isFullscreenColumn && !isCollapsed && lineCount > 10;
-        const coverImageId = getCoverImage(displayContent);
-        const plainText = getPlainText(displayContent);
-        
-        const coverExt = coverImageId ? coverImageId.split('.').pop()?.toLowerCase() : null;
-        const coverIsGif = coverExt === 'gif';
-        const coverHasThumb = coverImageId && !coverIsGif && thumbMap && thumbMap[coverImageId];
-        const coverSrc = coverHasThumb 
-            ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
-            : (coverImageId ? `/~/notes/img/${effectiveTab}/${coverImageId}` : '');
+const coverData = getCoverImage(displayContent);
+const coverImageId = coverData?.id || null;
+const coverType = coverData?.type || null;
+const plainText = getPlainText(displayContent);
+
+let coverSrc = '';
+let coverExt = '';
+let coverIsGif = false;
+let coverHasThumb = false;
+
+if (coverType === 'image') {
+    coverExt = coverImageId.split('.').pop()?.toLowerCase();
+    coverIsGif = coverExt === 'gif';
+    coverHasThumb = !coverIsGif && thumbMap && thumbMap[coverImageId];
+    coverSrc = coverHasThumb 
+        ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
+        : `/~/notes/img/${effectiveTab}/${coverImageId}`;
+} else if (coverType === 'video') {
+    coverSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
+    coverHasThumb = true; // 视频始终有缩略图
+}
         
         const canManage = isAdminUser || isOwner;
         
@@ -1850,20 +1893,26 @@
                 const sortedKeys = Object.keys(rawNotes).sort();
                 const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
                 
+                const newThumbMap = data.thumbMap || {};
+                const newFileNames = data.fileNames || {};
+                
                 if (append) {
                     setNotes(prev => {
                         const existingTs = new Set(prev.map(n => n.ts));
                         const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
                         return [...newNotes, ...prev];
                     });
+                    // append 時合併 thumbMap
+                    setThumbMap(prev => ({ ...prev, ...newThumbMap }));
+                    setAttNames(prev => ({ ...prev, ...newFileNames }));
                 } else {
                     setNotes(notesWithTab);
+                    setThumbMap(newThumbMap);
+                    setAttNames(newFileNames);
                 }
                 const newHasMore = data.hasMore || false;
                 setHasMore(newHasMore);
                 setCurrentOffset(offset + notesWithTab.length);
-                setThumbMap(data.thumbMap || {});
-                setAttNames(data.fileNames || {});
                 return newHasMore;
             } catch (e) {
                 if (e.name === 'AbortError') {}
