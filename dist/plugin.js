@@ -1,4 +1,4 @@
-exports.version = 3.1
+exports.version = 3.2
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -358,18 +358,21 @@ exports.init = async api => {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
     }
 
-    function generateFileId(originalName) {
-        const now = new Date()
-        const dateStr = now.getFullYear() +
-            String(now.getMonth() + 1).padStart(2, '0') +
-            String(now.getDate()).padStart(2, '0') +
-            String(now.getHours()).padStart(2, '0') +
-            String(now.getMinutes()).padStart(2, '0') +
-            String(now.getSeconds()).padStart(2, '0')
-        const rand = crypto.randomBytes(3).toString('hex')
-        const ext = path.extname(originalName) || '.jpg'
-        return `${dateStr}_${rand}${ext}`
-    }
+function generateFileId(originalName) {
+    const now = new Date()
+    const dateStr = now.getFullYear() +
+        String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0')
+    const rand = crypto.randomBytes(3).toString('hex')
+    // 保留原始扩展名，但添加时间前缀
+    const ext = path.extname(originalName) || ''
+    const baseName = path.basename(originalName, ext)
+    // 文件名格式：年月日时分秒_随机数_原始文件名
+    return `${dateStr}_${rand}_${baseName}${ext}`
+}
 
     function getTabDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
@@ -386,9 +389,9 @@ exports.init = async api => {
     }
 
     function getTabImgDir(tab) {
-        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
-        return path.join(IMG_BASE_DIR, safeTab)
-    }
+    const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+    return path.join(IMG_BASE_DIR, safeTab)  // storage/img/News
+}
 
     function getTabMovDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
@@ -401,9 +404,9 @@ exports.init = async api => {
     }
 
     function getTabThumbDir(tab) {
-        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
-        return path.join(THUMB_BASE_DIR, safeTab)
-    }
+    const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+    return path.join(THUMB_BASE_DIR, safeTab)  // storage/thumb/News
+}
 
     function getNameMapPath(tab, type) {
         const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
@@ -543,15 +546,31 @@ exports.init = async api => {
         await fs.writeFile(mapPath, JSON.stringify(nameMap))
     }
 
-    async function getFileName(tab, type, fileId) {
-        const mapPath = getNameMapPath(tab, type)
-        try {
-            const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
-            return nameMap[fileId] || fileId
-        } catch {
-            return fileId
-        }
+async function getFileName(tab, type, fileId) {
+    // 首先从目标目录的映射中查找
+    const mapPath = getNameMapPath(tab, type)
+    try {
+        const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+        if (nameMap[fileId]) return nameMap[fileId]
+    } catch {}
+    
+    // 如果找不到，尝试从临时目录映射中查找
+    try {
+        const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+        const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+        if (tempNameMap[fileId]) return tempNameMap[fileId]
+    } catch {}
+    
+    // 如果都找不到，从文件名中提取原始名称（去除时间前缀）
+    // 格式：年月日时分秒_随机数_原始文件名
+    const parts = fileId.split('_')
+    if (parts.length >= 3) {
+        // 移除前两个部分（时间和随机数）
+        const originalParts = parts.slice(2)
+        return originalParts.join('_')
     }
+    return fileId
+}
 
     async function cleanFileNameMapping(tab, type, removedIds) {
         if (removedIds.length === 0) return
@@ -564,9 +583,13 @@ exports.init = async api => {
     }
 
     async function ensureDir(dir) {
-        await fs.mkdir(dir, { recursive: true }).catch(() => {})
-        return dir
+    try {
+        await fs.mkdir(dir, { recursive: true })
+    } catch (e) {
+        if (e.code !== 'EEXIST') throw e
     }
+    return dir
+}
 
     function extractImageIds(content) {
         if (!content) return []
@@ -912,55 +935,73 @@ exports.init = async api => {
         return false
     }
 
-    async function promoteFileFromTemp(fileId, targetDir) {
-        const tempPath = getTempPath(fileId)
-        await ensureDir(targetDir)
-        const finalPath = path.join(targetDir, fileId)
+async function promoteFileFromTemp(fileId, targetDir) {
+    const tempPath = getTempPath(fileId)
+    await ensureDir(targetDir)
+    const finalPath = path.join(targetDir, fileId)
+    
+    try {
+        await fs.stat(tempPath)
+        await fs.copyFile(tempPath, finalPath)
         
+        // 复制临时文件名映射到目标目录
+        const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
         try {
-            await fs.stat(tempPath)
-            await fs.copyFile(tempPath, finalPath)
-            return true
-        } catch {
-            return false
-        }
+            const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+            if (tempNameMap[fileId]) {
+                const mapPath = path.join(targetDir, '.filenames')
+                let nameMap = {}
+                try {
+                    nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+                } catch {}
+                nameMap[fileId] = tempNameMap[fileId]
+                await fs.writeFile(mapPath, JSON.stringify(nameMap))
+            }
+        } catch {}
+        return true
+    } catch {
+        return false
     }
+}
 
-    async function promoteImageFromTemp(imageId, tab) {
-        const imgDir = getTabImgDir(tab)
-        const thumbDir = await ensureDir(getTabThumbDir(tab))
-        const tempPath = getTempPath(imageId)
-        const finalPath = path.join(imgDir, imageId)
-        const thumbPath = path.join(thumbDir, imageId)
+async function promoteImageFromTemp(imageId, tab) {
+    const imgDir = getTabImgDir(tab)
+    const thumbDir = getTabThumbDir(tab)
+    const tempPath = getTempPath(imageId)
+    const finalPath = path.join(imgDir, imageId)
+    const thumbPath = path.join(thumbDir, imageId)
+    
+    try {
+        await fs.stat(tempPath)
+        await ensureDir(imgDir)
+        await ensureDir(thumbDir)
         
-        try {
-            await fs.stat(tempPath)
-            const imgBuffer = await fs.readFile(tempPath)
-            await generateThumbnail(imgBuffer, thumbPath)
-            await fs.copyFile(tempPath, finalPath)
-            return true
-        } catch {
-            return false
-        }
+        const imgBuffer = await fs.readFile(tempPath)
+        await generateThumbnail(imgBuffer, thumbPath)
+        await fs.copyFile(tempPath, finalPath)
+        return true
+    } catch (e) {
+        return false
     }
+}
 
     async function promoteAllAttachments(content, tab) {
-        const { img, mov, att } = extractAllAttachmentIds(content)
-        
-        const promotePromises = []
-        
-        for (const imgId of img) {
-            promotePromises.push(
-                promoteImageFromTemp(imgId, tab).then(promoted => {
-                    if (promoted) {
-                        setTimeout(() => {
-                            fs.unlink(getTempPath(imgId)).catch(() => {})
-                        }, TEMP_FILE_TTL)
-                    }
-                    return promoted
-                })
-            )
-        }
+    const { img, mov, att } = extractAllAttachmentIds(content)
+    
+    const promotePromises = []
+    
+    for (const imgId of img) {
+        promotePromises.push(
+            promoteImageFromTemp(imgId, tab).then(promoted => {
+                if (promoted) {
+                    setTimeout(() => {
+                        fs.unlink(getTempPath(imgId)).catch(() => {})
+                    }, TEMP_FILE_TTL)
+                }
+                return promoted
+            })
+        )
+    }
         
         for (const movId of mov) {
             const movDir = getTabMovDir(tab)
@@ -2093,63 +2134,75 @@ ctx.body = {
     }
     
     async function uploadFileToTemp(ctx) {
-        const username = getCurrentUsername(ctx)
-        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+    const username = getCurrentUsername(ctx)
+    if (!username || !isAllowed(username)) { ctx.status = 403; return }
 
-        try {
-            const body = ctx.request?.body || ctx.state?.params || {}
-            if (!body.data) { ctx.status = 400; ctx.body = { error: 'No file data' }; return }
+    try {
+        const body = ctx.request?.body || ctx.state?.params || {}
+        if (!body.data) { ctx.status = 400; ctx.body = { error: 'No file data' }; return }
 
-            const matches = body.data.match(/^data:(.+);base64,(.+)$/)
-            if (!matches) { ctx.status = 400; ctx.body = { error: 'Invalid base64 format' }; return }
+        const matches = body.data.match(/^data:(.+);base64,(.+)$/)
+        if (!matches) { ctx.status = 400; ctx.body = { error: 'Invalid base64 format' }; return }
 
-            const mimeType = matches[1]
-            const fileBuffer = Buffer.from(matches[2], 'base64')
-            const originalName = body.name || 'file'
-            const displayName = body.displayName || originalName
+        const mimeType = matches[1]
+        const fileBuffer = Buffer.from(matches[2], 'base64')
+        const originalName = body.name || 'file'
+        const displayName = body.displayName || originalName
 
-            if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
-            
-            const isImage = mimeType.startsWith('image/')
-            const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
-            if (fileBuffer.length > maxSize) {
-                ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
-            }
-
-            await ensureDir(TEMP_DIR)
-            const fileId = generateFileId(originalName)
-            const filePath = path.join(TEMP_DIR, fileId)
-            
-            await fs.writeFile(filePath, fileBuffer)
-            
-            const isVideo = mimeType.startsWith('video/')
-            const isAudio = mimeType.startsWith('audio/')
-            
-            let hasThumb = false
-            if (isImage) {
-                const thumbDir = await ensureDir(THUMB_BASE_DIR)
-                const thumbSubDir = path.join(thumbDir, '_temp')
-                await ensureDir(thumbSubDir)
-                const thumbPath = path.join(thumbSubDir, fileId)
-                hasThumb = await generateThumbnail(fileBuffer, thumbPath)
-            }
-            
-            ctx.body = { 
-                ok: true, 
-                fileId,
-                isImage,
-                isVideo,
-                isAudio,
-                isOther: !isImage && !isVideo && !isAudio,
-                url: `/~/notes/temp/${fileId}`,
-                name: displayName,
-                hasThumb
-            }
-            ctx.status = 200
-        } catch (e) {
-            ctx.status = 500; ctx.body = { error: 'Upload failed: ' + e.message }
+        if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
+        
+        const isImage = mimeType.startsWith('image/')
+        const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
+        if (fileBuffer.length > maxSize) {
+            ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
         }
+
+        await ensureDir(TEMP_DIR)
+        // 生成带时间前缀的文件名
+        const fileId = generateFileId(originalName)
+        const filePath = path.join(TEMP_DIR, fileId)
+        
+        await fs.writeFile(filePath, fileBuffer)
+        
+        // 保存原始文件名映射（用于下载时还原）
+        // 使用全局映射或 temp 目录下的映射文件
+        const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+        let tempNameMap = {}
+        try {
+            tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+        } catch {}
+        tempNameMap[fileId] = originalName
+        await fs.writeFile(tempMapPath, JSON.stringify(tempNameMap))
+        
+        const isVideo = mimeType.startsWith('video/')
+        const isAudio = mimeType.startsWith('audio/')
+        
+        let hasThumb = false
+        if (isImage) {
+            const thumbDir = await ensureDir(THUMB_BASE_DIR)
+            const thumbSubDir = path.join(thumbDir, '_temp')
+            await ensureDir(thumbSubDir)
+            const thumbPath = path.join(thumbSubDir, fileId)
+            hasThumb = await generateThumbnail(fileBuffer, thumbPath)
+        }
+        
+        ctx.body = { 
+            ok: true, 
+            fileId,
+            isImage,
+            isVideo,
+            isAudio,
+            isOther: !isImage && !isVideo && !isAudio,
+            url: `/~/notes/temp/${fileId}`,
+            name: displayName,
+            hasThumb,
+            originalName: originalName  // 返回原始名称给前端
+        }
+        ctx.status = 200
+    } catch (e) {
+        ctx.status = 500; ctx.body = { error: 'Upload failed: ' + e.message }
     }
+}
     
     async function serveTempFile(ctx) {
         const params = ctx.params || {}

@@ -19,44 +19,41 @@
         } catch { return false; }
     }
 
-    function sanitizeFileNameForUpload(originalName) {
-        const ext = originalName.lastIndexOf('.') > 0 ? originalName.substring(originalName.lastIndexOf('.')) : '';
-        const base = ext ? originalName.substring(0, originalName.lastIndexOf('.')) : originalName;
-        const timestamp = Date.now().toString(36);
-        const rand = Math.random().toString(36).substring(2, 6);
-        const safeBase = `file_${timestamp}_${rand}`;
-        return { safeName: safeBase + ext, displayName: originalName };
-    }
+function sanitizeFileNameForUpload(originalName) {
+    // 直接返回原始文件名，让服务器端添加时间前缀
+    return { safeName: originalName, displayName: originalName };
+}
 
     async function uploadFile(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = async () => {
-                try {
-                    const { safeName, displayName } = sanitizeFileNameForUpload(file.name);
-                    const res = await fetch('/~/api/notes/upload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            name: safeName,
-                            data: reader.result,
-                            displayName: displayName
-                        })
-                    });
-                    if (!res.ok) {
-                        const err = await res.json().catch(() => ({}));
-                        throw new Error(err.error || 'Upload failed (status: ' + res.status + ')');
-                    }
-                    const data = await res.json();
-                    resolve({ ...data, displayName: displayName });
-                } catch (e) {
-                    reject(e);
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = async () => {
+            try {
+                // 使用原始文件名
+                const originalName = file.name;
+                const res = await fetch('/~/api/notes/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: originalName,  // 直接使用原始文件名
+                        data: reader.result,
+                        displayName: originalName
+                    })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.error || 'Upload failed (status: ' + res.status + ')');
                 }
-            };
-            reader.onerror = () => reject(new Error('Failed to read file'));
-            reader.readAsDataURL(file);
-        });
-    }
+                const data = await res.json();
+                resolve({ ...data, displayName: originalName });
+            } catch (e) {
+                reject(e);
+            }
+        };
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+    });
+}
 
     function createFilePicker(accept = '*') {
         return new Promise((resolve, reject) => {
@@ -858,13 +855,21 @@ onError: function(e) {
                     );
                 }
                 if (part.type === 'attachment') {
-                    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
-                    const displayName = part.name || attNames[part.fileId] || part.fileId;
-                    return h('span', { key: `att-${i}`, className: 'note-inline-att' },
-                        h('span', { className: 'note-att-icon' }, '\u2B07'),
-                        h('a', { href: attUrl, download: displayName, className: 'note-att-link' }, displayName)
-                    );
-                }
+    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
+    // 从 attNames 获取原始文件名，如果没有则从 fileId 中提取
+    let displayName = attNames[part.fileId] || part.name || part.fileId;
+    if (!attNames[part.fileId] && !part.name) {
+        // 从 fileId 中提取原始文件名
+        const parts = part.fileId.split('_');
+        if (parts.length >= 3) {
+            displayName = parts.slice(2).join('_');
+        }
+    }
+    return h('span', { key: `att-${i}`, className: 'note-inline-att' },
+        h('span', { className: 'note-att-icon' }, '\u2B07'),
+        h('a', { href: attUrl, download: displayName, className: 'note-att-link' }, displayName)
+    );
+}
                 const textParts = part.content.split(linkRegex);
                 return textParts.map((textPart, j) => {
                     const key = `text-${i}-${j}`;
