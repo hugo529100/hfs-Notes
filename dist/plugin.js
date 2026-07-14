@@ -1,5 +1,5 @@
-exports.version = 2.8
-exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, and progressive loading."
+exports.version = 3.1
+exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
 exports.frontend_js = ['main.js']
@@ -90,8 +90,124 @@ exports.config = {
     thumbnail_time: {
         type: 'string',
         defaultValue: '00:00:05',
-        label: 'Video thumbnail time position',
-        helperText: 'Time position for video thumbnail extraction (HH:MM:SS)',
+        label: 'JPG thumbnail time position',
+        helperText: 'Time position for JPG thumbnail extraction (HH:MM:SS)',
+        showIf: x => x.thumbnail_format === 'jpg',
+        xs: 6
+    },
+    thumbnail_format: {
+        type: 'select',
+        label: 'Video thumbnail format',
+        defaultValue: 'jpg',
+        options: {
+            'JPG (Static)': 'jpg',
+            'GIF (Animated preview)': 'gif'
+        },
+        helperText: 'Select output format for video thumbnails',
+        xs: 6
+    },
+    gif_width: {
+        type: 'number',
+        min: 100,
+        max: 800,
+        defaultValue: 320,
+        label: 'GIF width (pixels)',
+        helperText: 'Width of output GIF (height auto-scaled)',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    video_size_threshold: {
+        type: 'number',
+        defaultValue: 25,
+        min: 1,
+        max: 100000,
+        label: 'Video size threshold (MB)',
+        helperText: 'Videos larger than this will use long video settings',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    short_video_start_time: {
+        type: 'string',
+        defaultValue: '00:01:00',
+        label: 'Short video start time (HH:MM:SS)',
+        helperText: 'Start time for short videos (<= threshold)',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 12
+    },
+    short_video_duration: {
+        type: 'number',
+        min: 1,
+        max: 60,
+        defaultValue: 12,
+        label: 'Short video GIF duration (seconds)',
+        helperText: 'Duration of GIF for short videos',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    short_video_fps: {
+        type: 'number',
+        min: 1,
+        max: 30,
+        defaultValue: 6,
+        label: 'Short video GIF FPS',
+        helperText: 'Frames per second for short videos',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    long_video_start_time: {
+        type: 'string',
+        defaultValue: '00:3:00',
+        label: 'Long video start time (HH:MM:SS)',
+        helperText: 'Start time for long videos (> threshold)',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 12
+    },
+    long_video_duration: {
+        type: 'number',
+        min: 1,
+        max: 60,
+        defaultValue: 12,
+        label: 'Long video GIF duration (seconds)',
+        helperText: 'Duration of GIF for long videos',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    long_video_fps: {
+        type: 'number',
+        min: 1,
+        max: 30,
+        defaultValue: 6,
+        label: 'Long video GIF FPS',
+        helperText: 'Frames per second for long videos',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    backup_video_start_time: {
+        type: 'string',
+        defaultValue: '00:00:00',
+        label: 'Backup video start time (HH:MM:SS)',
+        helperText: 'Fallback start time when other settings fail',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 12
+    },
+    backup_video_duration: {
+        type: 'number',
+        min: 1,
+        max: 60,
+        defaultValue: 6,
+        label: 'Backup video GIF duration (seconds)',
+        helperText: 'Duration of GIF for backup mode',
+        showIf: x => x.thumbnail_format === 'gif',
+        xs: 6
+    },
+    backup_video_fps: {
+        type: 'number',
+        min: 1,
+        max: 30,
+        defaultValue: 6,
+        label: 'Backup video GIF FPS',
+        helperText: 'Frames per second for backup mode',
+        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     }
 }
@@ -113,6 +229,7 @@ exports.init = async api => {
     const MOV_BASE_DIR = path.join(storage, 'mov')
     const ATT_BASE_DIR = path.join(storage, 'att')
     const THUMB_BASE_DIR = path.join(storage, 'thumb')
+    const TEMP_DIR = path.join(storage, 'temp')
     const BACKUP_DIR = path.join(storage, 'backup')
     const TABS_MAP_FILE = path.join(TABS_DIR, '_tabs_map.json')
 
@@ -120,13 +237,13 @@ exports.init = async api => {
     const MAX_STORAGE_WARNING = 400
     const MAX_IMG_SIZE = 40 * 1024 * 1024
     const MAX_FILE_SIZE = 200 * 1024 * 1024
-    const TEMP_IMG_TTL = 60 * 60 * 1000
-    const THUMB_QUALITY = 85
+    const TEMP_FILE_TTL = 60 * 1000
+    const THUMB_QUALITY = 70
     const PAGE_SIZE = 10
     const SUMMARY_LENGTH = 200
 
     let backupTimer = null
-    let tempCleanupTimer = null
+    let midnightCleanupTimer = null
     let isBackupRunning = false
     
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
@@ -136,6 +253,7 @@ exports.init = async api => {
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(ATT_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
+    await fs.mkdir(TEMP_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
 
     try {
@@ -272,15 +390,6 @@ exports.init = async api => {
         return path.join(IMG_BASE_DIR, safeTab)
     }
 
-    function getTempDir(tab) {
-        return path.join(getTabImgDir(tab), 'temp')
-    }
-
-    function getTabThumbDir(tab) {
-        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
-        return path.join(THUMB_BASE_DIR, safeTab)
-    }
-
     function getTabMovDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
         return path.join(MOV_BASE_DIR, safeTab)
@@ -291,9 +400,18 @@ exports.init = async api => {
         return path.join(ATT_BASE_DIR, safeTab)
     }
 
+    function getTabThumbDir(tab) {
+        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+        return path.join(THUMB_BASE_DIR, safeTab)
+    }
+
     function getNameMapPath(tab, type) {
         const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
         return path.join(dir, '.filenames')
+    }
+
+    function getTempPath(fileId) {
+        return path.join(TEMP_DIR, fileId)
     }
 
     async function loadTabsMap() {
@@ -471,6 +589,14 @@ exports.init = async api => {
         return matches.map(m => m.slice(5, -1))
     }
 
+    function extractAllAttachmentIds(content) {
+        return {
+            img: extractImageIds(content),
+            mov: extractMovIds(content),
+            att: extractAttIds(content)
+        }
+    }
+
     function parseTimeToSeconds(timeStr) {
         if (!timeStr.includes(':')) {
             return parseFloat(timeStr) || 0
@@ -488,6 +614,103 @@ exports.init = async api => {
         const mins = Math.floor((seconds % 3600) / 60)
         const secs = Math.floor(seconds % 60)
         return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    }
+
+    function getGradientParams() {
+        const gifWidth = api.getConfig('gif_width') || 320
+        
+        return {
+            SHORT: {
+                startTime: parseTimeToSeconds(api.getConfig('short_video_start_time') || '00:03:00'),
+                duration: api.getConfig('short_video_duration') || 10,
+                fps: api.getConfig('short_video_fps') || 5,
+                width: gifWidth
+            },
+            LONG: {
+                startTime: parseTimeToSeconds(api.getConfig('long_video_start_time') || '00:10:00'),
+                duration: api.getConfig('long_video_duration') || 12,
+                fps: api.getConfig('long_video_fps') || 6,
+                width: gifWidth
+            },
+            BACKUP: {
+                startTime: parseTimeToSeconds(api.getConfig('backup_video_start_time') || '00:00:00'),
+                duration: api.getConfig('backup_video_duration') || 6,
+                fps: api.getConfig('backup_video_fps') || 5,
+                width: gifWidth
+            }
+        }
+    }
+
+    async function generateGifWithParams(filePath, outputPath, params) {
+        const startTime = params.startTime
+        const duration = params.duration
+        const fps = params.fps
+        const width = params.width
+        
+        const palettePath = outputPath.replace(/\.gif$/i, '_palette.png')
+        
+        const paletteArgs = [
+            '-ss', formatTimeFromSeconds(startTime),
+            '-t', '5',
+            '-i', filePath,
+            '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,palettegen`,
+            '-y', palettePath
+        ]
+        
+        await new Promise(resolve => {
+            const paletteProc = spawn(api.getConfig('ffmpeg_path') || 'ffmpeg', paletteArgs)
+            paletteProc.on('exit', code => {
+                if (code !== 0) {
+                    fs.unlink(palettePath).catch(() => {})
+                }
+                resolve()
+            })
+            paletteProc.on('error', () => {
+                fs.unlink(palettePath).catch(() => {})
+                resolve()
+            })
+            paletteProc.stderr?.on('data', () => {})
+        })
+        
+        const gifArgs = [
+            '-ss', formatTimeFromSeconds(startTime),
+            '-t', duration.toString(),
+            '-i', filePath,
+            '-i', palettePath,
+            '-filter_complex', `fps=${fps},scale=${width}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3`,
+            '-loop', '0',
+            '-f', 'gif',
+            '-y', outputPath
+        ]
+        
+        return new Promise(resolve => {
+            const gifProc = spawn(api.getConfig('ffmpeg_path') || 'ffmpeg', gifArgs)
+            gifProc.stderr?.on('data', () => {})
+            gifProc.on('exit', async code => {
+                try { await fs.unlink(palettePath) } catch {}
+                if (code === 0) {
+                    try {
+                        const stats = await fs.stat(outputPath)
+                        if (stats.size > 0) {
+                            resolve(true)
+                        } else {
+                            try { await fs.unlink(outputPath) } catch {}
+                            resolve(false)
+                        }
+                    } catch {
+                        resolve(false)
+                    }
+                } else {
+                    try { await fs.unlink(outputPath) } catch {}
+                    resolve(false)
+                }
+            })
+            gifProc.on('error', async () => {
+                try { await fs.unlink(palettePath) } catch {}
+                try { await fs.unlink(outputPath) } catch {}
+                resolve(false)
+            })
+        })
     }
 
     async function generateThumbnailWithSharp(imageBuffer, outputPath) {
@@ -547,19 +770,12 @@ exports.init = async api => {
     async function extractVideoThumbnail(videoPath, tab, fileId) {
         try {
             const ffmpegPath = api.getConfig('ffmpeg_path') || 'ffmpeg'
-            const thumbTimeConfig = api.getConfig('thumbnail_time') || '00:00:05'
-            
-            let timeInSeconds
-            if (thumbTimeConfig.includes(':')) {
-                timeInSeconds = parseTimeToSeconds(thumbTimeConfig)
-            } else {
-                timeInSeconds = parseInt(thumbTimeConfig) || 5
-            }
+            const thumbFormat = api.getConfig('thumbnail_format') || 'jpg'
             
             const thumbDir = await ensureDir(getTabThumbDir(tab))
             const ext = path.extname(fileId)
             const baseName = path.basename(fileId, ext)
-            const thumbId = baseName + '.jpg'
+            const thumbId = baseName + '.' + thumbFormat
             const thumbPath = path.join(thumbDir, thumbId)
             
             try {
@@ -567,55 +783,100 @@ exports.init = async api => {
                 return true
             } catch {}
             
-            return new Promise((resolve) => {
-                const timeOffsets = [0, 0.5, 1, 1.5, 2, 3, 5]
-                let maxAttempts = Math.min(timeOffsets.length, 5)
-                let success = false
-                
-                const tryExtract = (offsetIndex) => {
-                    if (offsetIndex >= maxAttempts || success) {
-                        if (!success) resolve(false)
-                        return
-                    }
-                    
-                    const offset = timeOffsets[offsetIndex] || 5
-                    const timeStr = formatTimeFromSeconds(timeInSeconds + offset)
-                    
-                    const ffmpeg = spawn(ffmpegPath, [
-                        '-ss', timeStr,
-                        '-i', videoPath,
-                        '-vframes', '1',
-                        '-q:v', '2',
-                        '-f', 'image2',
-                        '-y', thumbPath
-                    ])
-                    
-                    ffmpeg.stderr?.on('data', () => {})
-                    
-                    ffmpeg.on('exit', (code) => {
-                        if (code === 0) {
-                            fs.stat(thumbPath).then(() => {
-                                success = true
-                                resolve(true)
-                            }).catch(() => {
-                                tryExtract(offsetIndex + 1)
-                            })
-                        } else {
-                            tryExtract(offsetIndex + 1)
-                        }
-                    })
-                    
-                    ffmpeg.on('error', () => {
-                        tryExtract(offsetIndex + 1)
-                    })
-                    
-                    setTimeout(() => {
-                        tryExtract(offsetIndex + 1)
-                    }, 5000)
+            try {
+                const stats = await fs.stat(videoPath)
+                if (stats.size === 0) return false
+            } catch {
+                return false
+            }
+
+            if (thumbFormat === 'jpg') {
+                const thumbTimeConfig = api.getConfig('thumbnail_time') || '00:00:05'
+                let timeInSeconds
+                if (thumbTimeConfig.includes(':')) {
+                    timeInSeconds = parseTimeToSeconds(thumbTimeConfig)
+                } else {
+                    timeInSeconds = parseInt(thumbTimeConfig) || 5
                 }
                 
-                tryExtract(0)
-            })
+                return new Promise((resolve) => {
+                    const timeOffsets = [0, 0.5, 1, 1.5, 2, 3, 5]
+                    let maxAttempts = Math.min(timeOffsets.length, 5)
+                    let success = false
+                    
+                    const tryExtract = (offsetIndex) => {
+                        if (offsetIndex >= maxAttempts || success) {
+                            if (!success) resolve(false)
+                            return
+                        }
+                        
+                        const offset = timeOffsets[offsetIndex] || 5
+                        const timeStr = formatTimeFromSeconds(timeInSeconds + offset)
+                        
+                        const ffmpeg = spawn(ffmpegPath, [
+                            '-ss', timeStr,
+                            '-i', videoPath,
+                            '-vframes', '1',
+                            '-q:v', '2',
+                            '-f', 'image2',
+                            '-y', thumbPath
+                        ])
+                        
+                        ffmpeg.stderr?.on('data', () => {})
+                        
+                        ffmpeg.on('exit', (code) => {
+                            if (code === 0) {
+                                fs.stat(thumbPath).then(() => {
+                                    success = true
+                                    resolve(true)
+                                }).catch(() => {
+                                    tryExtract(offsetIndex + 1)
+                                })
+                            } else {
+                                tryExtract(offsetIndex + 1)
+                            }
+                        })
+                        
+                        ffmpeg.on('error', () => {
+                            tryExtract(offsetIndex + 1)
+                        })
+                        
+                        setTimeout(() => {
+                            tryExtract(offsetIndex + 1)
+                        }, 5000)
+                    }
+                    
+                    tryExtract(0)
+                })
+            } else {
+                const stats = await fs.stat(videoPath)
+                const fileSizeMB = stats.size / (1024 * 1024)
+                
+                const gradientParams = getGradientParams()
+                const threshold = api.getConfig('video_size_threshold') || 250
+                const isLongVideo = fileSizeMB > threshold
+                
+                let success = false
+                
+                if (isLongVideo) {
+                    success = await generateGifWithParams(videoPath, thumbPath, gradientParams.LONG)
+                    if (!success) {
+                        success = await generateGifWithParams(videoPath, thumbPath, gradientParams.SHORT)
+                    }
+                } else {
+                    success = await generateGifWithParams(videoPath, thumbPath, gradientParams.SHORT)
+                }
+                
+                if (!success) {
+                    success = await generateGifWithParams(videoPath, thumbPath, gradientParams.BACKUP)
+                }
+                
+                if (!success) {
+                    try { await fs.unlink(thumbPath) } catch {}
+                }
+                
+                return success
+            }
         } catch (e) {
             return false
         }
@@ -626,9 +887,10 @@ exports.init = async api => {
             const thumbDir = getTabThumbDir(tab)
             const ext = path.extname(fileId)
             const baseName = path.basename(fileId, ext)
-            const thumbId = baseName + '.jpg'
-            const thumbPath = path.join(thumbDir, thumbId)
-            await fs.unlink(thumbPath).catch(() => {})
+            const jpgPath = path.join(thumbDir, baseName + '.jpg')
+            const gifPath = path.join(thumbDir, baseName + '.gif')
+            await fs.unlink(jpgPath).catch(() => {})
+            await fs.unlink(gifPath).catch(() => {})
         } catch {}
     }
 
@@ -643,53 +905,157 @@ exports.init = async api => {
             const baseName = path.basename(mediaId, ext)
             thumbPath = path.join(thumbDir, baseName + '.jpg')
             if (fss.existsSync(thumbPath)) return true
+            thumbPath = path.join(thumbDir, baseName + '.gif')
+            if (fss.existsSync(thumbPath)) return true
         }
         
         return false
     }
 
-    async function promoteImages(tab, imageIds) {
-        const imgDir = getTabImgDir(tab)
-        const tempDir = getTempDir(tab)
-        const thumbDir = await ensureDir(getTabThumbDir(tab))
-        const promoted = []
+    async function promoteFileFromTemp(fileId, targetDir) {
+        const tempPath = getTempPath(fileId)
+        await ensureDir(targetDir)
+        const finalPath = path.join(targetDir, fileId)
         
-        for (const id of imageIds) {
-            const tempPath = path.join(tempDir, id)
-            const finalPath = path.join(imgDir, id)
-            const thumbPath = path.join(thumbDir, id)
-            try {
-                await fs.stat(tempPath)
-                const imgBuffer = await fs.readFile(tempPath)
-                await generateThumbnail(imgBuffer, thumbPath)
-                await fs.rename(tempPath, finalPath)
-                promoted.push(id)
-            } catch {}
+        try {
+            await fs.stat(tempPath)
+            await fs.copyFile(tempPath, finalPath)
+            return true
+        } catch {
+            return false
         }
-        return promoted
     }
 
-    async function cleanupTempImages() {
+    async function promoteImageFromTemp(imageId, tab) {
+        const imgDir = getTabImgDir(tab)
+        const thumbDir = await ensureDir(getTabThumbDir(tab))
+        const tempPath = getTempPath(imageId)
+        const finalPath = path.join(imgDir, imageId)
+        const thumbPath = path.join(thumbDir, imageId)
+        
         try {
-            const cutoff = Date.now() - TEMP_IMG_TTL
-            const tabDirs = await fs.readdir(IMG_BASE_DIR).catch(() => [])
-            
-            for (const dirName of tabDirs) {
-                const tempDir = path.join(IMG_BASE_DIR, dirName, 'temp')
-                try {
-                    const files = await fs.readdir(tempDir)
-                    for (const file of files) {
-                        const filePath = path.join(tempDir, file)
-                        try {
-                            const stat = await fs.stat(filePath)
-                            if (stat.mtimeMs < cutoff) {
-                                await fs.unlink(filePath)
-                            }
-                        } catch {}
+            await fs.stat(tempPath)
+            const imgBuffer = await fs.readFile(tempPath)
+            await generateThumbnail(imgBuffer, thumbPath)
+            await fs.copyFile(tempPath, finalPath)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    async function promoteAllAttachments(content, tab) {
+        const { img, mov, att } = extractAllAttachmentIds(content)
+        
+        const promotePromises = []
+        
+        for (const imgId of img) {
+            promotePromises.push(
+                promoteImageFromTemp(imgId, tab).then(promoted => {
+                    if (promoted) {
+                        setTimeout(() => {
+                            fs.unlink(getTempPath(imgId)).catch(() => {})
+                        }, TEMP_FILE_TTL)
                     }
-                    const remaining = await fs.readdir(tempDir).catch(() => [])
-                    if (remaining.length === 0) {
-                        await fs.rmdir(tempDir).catch(() => {})
+                    return promoted
+                })
+            )
+        }
+        
+        for (const movId of mov) {
+            const movDir = getTabMovDir(tab)
+            promotePromises.push(
+                promoteFileFromTemp(movId, movDir).then(promoted => {
+                    if (promoted) {
+                        const videoPath = path.join(movDir, movId)
+                        extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
+                        setTimeout(() => {
+                            fs.unlink(getTempPath(movId)).catch(() => {})
+                        }, TEMP_FILE_TTL)
+                    }
+                    return promoted
+                })
+            )
+        }
+        
+        for (const attId of att) {
+            const attDir = getTabAttDir(tab)
+            promotePromises.push(
+                promoteFileFromTemp(attId, attDir).then(promoted => {
+                    if (promoted) {
+                        setTimeout(() => {
+                            fs.unlink(getTempPath(attId)).catch(() => {})
+                        }, TEMP_FILE_TTL)
+                    }
+                    return promoted
+                })
+            )
+        }
+        
+        await Promise.all(promotePromises)
+    }
+
+    async function deleteAttachmentAcrossAllTabs(fileId, fileType) {
+        const tabs = getTabs()
+        const deletePromises = []
+        
+        deletePromises.push(fs.unlink(getTempPath(fileId)).catch(() => {}))
+        
+        if (fileType === 'img') {
+            for (const tab of tabs) {
+                const imgDir = getTabImgDir(tab)
+                deletePromises.push(fs.unlink(path.join(imgDir, fileId)).catch(() => {}))
+            }
+        } else if (fileType === 'thumb') {
+            for (const tab of tabs) {
+                const thumbDir = getTabThumbDir(tab)
+                const ext = path.extname(fileId)
+                const baseName = path.basename(fileId, ext)
+                deletePromises.push(fs.unlink(path.join(thumbDir, fileId)).catch(() => {}))
+                deletePromises.push(fs.unlink(path.join(thumbDir, baseName + '.jpg')).catch(() => {}))
+                deletePromises.push(fs.unlink(path.join(thumbDir, baseName + '.gif')).catch(() => {}))
+            }
+        } else if (fileType === 'mov') {
+            for (const tab of tabs) {
+                const movDir = getTabMovDir(tab)
+                deletePromises.push(fs.unlink(path.join(movDir, fileId)).catch(() => {}))
+                const ext = path.extname(fileId)
+                const baseName = path.basename(fileId, ext)
+                const thumbDir = getTabThumbDir(tab)
+                deletePromises.push(fs.unlink(path.join(thumbDir, baseName + '.jpg')).catch(() => {}))
+                deletePromises.push(fs.unlink(path.join(thumbDir, baseName + '.gif')).catch(() => {}))
+            }
+        } else if (fileType === 'att') {
+            for (const tab of tabs) {
+                const attDir = getTabAttDir(tab)
+                deletePromises.push(fs.unlink(path.join(attDir, fileId)).catch(() => {}))
+            }
+        }
+        
+        await Promise.all(deletePromises)
+        
+        if (fileType === 'mov') {
+            for (const tab of tabs) {
+                await cleanFileNameMapping(tab, 'mov', [fileId])
+            }
+        } else if (fileType === 'att') {
+            for (const tab of tabs) {
+                await cleanFileNameMapping(tab, 'att', [fileId])
+            }
+        }
+    }
+
+    async function cleanupTempFiles() {
+        try {
+            const cutoff = Date.now() - TEMP_FILE_TTL
+            const files = await fs.readdir(TEMP_DIR).catch(() => [])
+            
+            for (const file of files) {
+                const filePath = path.join(TEMP_DIR, file)
+                try {
+                    const stat = await fs.stat(filePath)
+                    if (stat.mtimeMs < cutoff) {
+                        await fs.unlink(filePath)
                     }
                 } catch {}
             }
@@ -844,7 +1210,6 @@ exports.init = async api => {
         isBackupRunning = true
         try {
             await createBackup()
-            await cleanupOldBackups()
             if (api.getConfig('autoExportTxt')) {
                 await exportTxtFiles()
             }
@@ -858,10 +1223,6 @@ exports.init = async api => {
             clearInterval(backupTimer)
             backupTimer = null
         }
-        if (tempCleanupTimer) {
-            clearInterval(tempCleanupTimer)
-            tempCleanupTimer = null
-        }
         
         const interval = api.getConfig('backupInterval') || 6
         
@@ -873,19 +1234,40 @@ exports.init = async api => {
             await performScheduledBackup()
         }, intervalMs)
         
-        tempCleanupTimer = setInterval(async () => {
-            await cleanupTempImages()
-        }, 60 * 60 * 1000)
-        
         if (backupTimer && backupTimer.unref) {
             backupTimer.unref()
         }
-        if (tempCleanupTimer && tempCleanupTimer.unref) {
-            tempCleanupTimer.unref()
+    }
+
+    function getMillisUntilMidnight() {
+        const now = new Date()
+        const midnight = new Date(now)
+        midnight.setHours(24, 0, 0, 0)
+        return midnight.getTime() - now.getTime()
+    }
+
+    function setupMidnightCleanup() {
+        if (midnightCleanupTimer) {
+            clearTimeout(midnightCleanupTimer)
+            midnightCleanupTimer = null
         }
+        
+        const scheduleNext = () => {
+            const delay = getMillisUntilMidnight()
+            midnightCleanupTimer = setTimeout(() => {
+                cleanupTempFiles().catch(() => {})
+                cleanupOldBackups().catch(() => {})
+                scheduleNext()
+            }, delay)
+            if (midnightCleanupTimer && midnightCleanupTimer.unref) {
+                midnightCleanupTimer.unref()
+            }
+        }
+        scheduleNext()
     }
 
     setupBackupTimer()
+    setupMidnightCleanup()
     
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
         setupBackupTimer()
@@ -1034,16 +1416,17 @@ exports.init = async api => {
             Object.assign(fileNames, attNames)
         } catch {}
         
-        ctx.body = { 
-            notes: pageNotes, 
-            count: totalCount, 
-            warning: totalCount >= MAX_STORAGE_WARNING,
-            thumbMap,
-            fileNames,
-            hasMore: hasMoreData,
-            offset: offset,
-            limit: limit
-        }
+ctx.body = { 
+    notes: pageNotes, 
+    count: totalCount, 
+    warning: totalCount >= MAX_STORAGE_WARNING,
+    thumbMap,
+    fileNames,
+    hasMore: hasMoreData,
+    offset: offset,
+    limit: limit,
+    thumbFormat: api.getConfig('thumbnail_format') || 'jpg'
+}
         ctx.status = 200
     }
 
@@ -1096,20 +1479,7 @@ exports.init = async api => {
         const autoCollapsed = forceCollapsed || lineCount > 100
         
         if (username && username !== 'Guest') {
-            const imageIds = extractImageIds(sanitizedM)
-            await promoteImages(tab, imageIds)
-            
-            const movIds = extractMovIds(sanitizedM)
-            if (movIds.length > 0) {
-                const movDir = getTabMovDir(tab)
-                for (const movId of movIds) {
-                    const videoPath = path.join(movDir, movId)
-                    try {
-                        await fs.stat(videoPath)
-                        extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
-                    } catch {}
-                }
-            }
+            await promoteAllAttachments(sanitizedM, tab)
         }
         
         await addNoteToTab(tab, ts, {
@@ -1151,43 +1521,26 @@ exports.init = async api => {
         const oldImgIds = extractImageIds(note.m)
         const newImgIds = extractImageIds(sanitizedM)
         const removedImgIds = oldImgIds.filter(id => !newImgIds.includes(id))
-        const imgDir = getTabImgDir(tab)
-        const thumbDir = getTabThumbDir(tab)
         for (const id of removedImgIds) {
-            await fs.unlink(path.join(imgDir, id)).catch(() => {})
-            await fs.unlink(path.join(thumbDir, id)).catch(() => {})
+            await deleteAttachmentAcrossAllTabs(id, 'img')
+            await deleteAttachmentAcrossAllTabs(id, 'thumb')
         }
         
         const oldMovIds = extractMovIds(note.m)
         const newMovIds = extractMovIds(sanitizedM)
         const removedMovIds = oldMovIds.filter(id => !newMovIds.includes(id))
-        const movDir = getTabMovDir(tab)
         for (const id of removedMovIds) {
-            await fs.unlink(path.join(movDir, id)).catch(() => {})
-            await deleteVideoThumbnail(tab, id)
+            await deleteAttachmentAcrossAllTabs(id, 'mov')
         }
-        await cleanFileNameMapping(tab, 'mov', removedMovIds)
         
         const oldAttIds = extractAttIds(note.m)
         const newAttIds = extractAttIds(sanitizedM)
         const removedAttIds = oldAttIds.filter(id => !newAttIds.includes(id))
-        const attDir = getTabAttDir(tab)
         for (const id of removedAttIds) {
-            await fs.unlink(path.join(attDir, id)).catch(() => {})
+            await deleteAttachmentAcrossAllTabs(id, 'att')
         }
-        await cleanFileNameMapping(tab, 'att', removedAttIds)
         
-        await promoteImages(tab, newImgIds)
-        
-        for (const movId of newMovIds) {
-            if (!oldMovIds.includes(movId)) {
-                const videoPath = path.join(movDir, movId)
-                try {
-                    await fs.stat(videoPath)
-                    extractVideoThumbnail(videoPath, tab, movId).catch(() => {})
-                } catch {}
-            }
-        }
+        await promoteAllAttachments(sanitizedM, tab)
         
         await updateNoteInTab(tab, ts, {
             m: sanitizedM,
@@ -1269,27 +1622,20 @@ exports.init = async api => {
         
         if (note.m) {
             const imgIds = extractImageIds(note.m)
-            const imgDir = getTabImgDir(tab)
-            const thumbDir = getTabThumbDir(tab)
             for (const id of imgIds) {
-                await fs.unlink(path.join(imgDir, id)).catch(() => {})
-                await fs.unlink(path.join(thumbDir, id)).catch(() => {})
+                await deleteAttachmentAcrossAllTabs(id, 'img')
+                await deleteAttachmentAcrossAllTabs(id, 'thumb')
             }
             
             const movIds = extractMovIds(note.m)
-            const movDir = getTabMovDir(tab)
             for (const id of movIds) {
-                await fs.unlink(path.join(movDir, id)).catch(() => {})
-                await deleteVideoThumbnail(tab, id)
+                await deleteAttachmentAcrossAllTabs(id, 'mov')
             }
-            await cleanFileNameMapping(tab, 'mov', movIds)
             
             const attIds = extractAttIds(note.m)
-            const attDir = getTabAttDir(tab)
             for (const id of attIds) {
-                await fs.unlink(path.join(attDir, id)).catch(() => {})
+                await deleteAttachmentAcrossAllTabs(id, 'att')
             }
-            await cleanFileNameMapping(tab, 'att', attIds)
         }
         
         await deleteNoteFromTab(tab, ts)
@@ -1437,22 +1783,29 @@ exports.init = async api => {
                 const stat = await fs.stat(dirPath).catch(() => null)
                 if (!stat || !stat.isDirectory()) continue
                 const files = await fs.readdir(dirPath).catch(() => [])
-                const realFiles = files.filter(f => f !== 'temp')
-                imgStats.tabs[dirName] = realFiles.length
-                imgStats.count += realFiles.length
-                for (const f of realFiles) {
+                imgStats.tabs[dirName] = files.length
+                imgStats.count += files.length
+                for (const f of files) {
                     try {
                         const fstat = await fs.stat(path.join(dirPath, f))
                         imgStats.totalSize += fstat.size
                     } catch {}
                 }
-                const tempDir = path.join(dirPath, 'temp')
+            }
+        } catch {}
+        
+        let tempStats = { count: 0, totalSize: 0 }
+        try {
+            const tempFiles = await fs.readdir(TEMP_DIR).catch(() => [])
+            tempStats.count = tempFiles.length
+            for (const f of tempFiles) {
                 try {
-                    const tempFiles = await fs.readdir(tempDir)
-                    imgStats.tempCount += tempFiles.length
+                    const fstat = await fs.stat(path.join(TEMP_DIR, f))
+                    tempStats.totalSize += fstat.size
                 } catch {}
             }
         } catch {}
+        imgStats.tempCount = tempStats.count
         
         let thumbStats = { count: 0, totalSize: 0, tabs: {} }
         try {
@@ -1524,6 +1877,7 @@ exports.init = async api => {
                 maxFileSize: formatBytes(MAX_FILE_SIZE),
                 ffmpegPath: api.getConfig('ffmpeg_path') || 'ffmpeg',
                 thumbnailTime: api.getConfig('thumbnail_time') || '00:00:05',
+                thumbnailFormat: api.getConfig('thumbnail_format') || 'jpg',
                 thumbQuality: api.getConfig('thumbQuality') || THUMB_QUALITY,
                 thumbPixels: api.getConfig('thumbPixels') || 400,
                 useSharpPlugin: api.getConfig('useSharpPlugin') !== false,
@@ -1536,7 +1890,8 @@ exports.init = async api => {
             imgStats: { ...imgStats, sizeReadable: formatBytes(imgStats.totalSize) },
             thumbStats: { ...thumbStats, sizeReadable: formatBytes(thumbStats.totalSize) },
             movStats: { ...movStats, sizeReadable: formatBytes(movStats.totalSize) },
-            attStats: { ...attStats, sizeReadable: formatBytes(attStats.totalSize) }
+            attStats: { ...attStats, sizeReadable: formatBytes(attStats.totalSize) },
+            tempStats: { ...tempStats, sizeReadable: formatBytes(tempStats.totalSize) }
         }
         ctx.status = 200
     }
@@ -1660,51 +2015,48 @@ exports.init = async api => {
         await createBackup()
         
         const index = await loadTabIndex(tab)
-        const imgDir = getTabImgDir(tab)
-        const tempDir = getTempDir(tab)
-        const thumbDir = getTabThumbDir(tab)
-        const movDir = getTabMovDir(tab)
-        const attDir = getTabAttDir(tab)
         
         for (const ts of Object.keys(index.notes)) {
             const content = await loadNoteContent(tab, ts)
             if (content) {
                 const imgIds = extractImageIds(content)
                 for (const id of imgIds) {
-                    await fs.unlink(path.join(imgDir, id)).catch(() => {})
-                    await fs.unlink(path.join(thumbDir, id)).catch(() => {})
+                    await deleteAttachmentAcrossAllTabs(id, 'img')
+                    await deleteAttachmentAcrossAllTabs(id, 'thumb')
                 }
                 
                 const movIds = extractMovIds(content)
                 for (const id of movIds) {
-                    await fs.unlink(path.join(movDir, id)).catch(() => {})
-                    await deleteVideoThumbnail(tab, id)
+                    await deleteAttachmentAcrossAllTabs(id, 'mov')
                 }
                 
                 const attIds = extractAttIds(content)
                 for (const id of attIds) {
-                    await fs.unlink(path.join(attDir, id)).catch(() => {})
+                    await deleteAttachmentAcrossAllTabs(id, 'att')
                 }
             }
         }
         
+        const imgDir = getTabImgDir(tab)
         try {
-            const tempFiles = await fs.readdir(tempDir)
-            for (const f of tempFiles) await fs.unlink(path.join(tempDir, f)).catch(() => {})
-            await fs.rmdir(tempDir).catch(() => {})
+            const imgFiles = await fs.readdir(imgDir).catch(() => [])
+            for (const f of imgFiles) await fs.unlink(path.join(imgDir, f)).catch(() => {})
         } catch {}
         
+        const thumbDir = getTabThumbDir(tab)
         try {
             const thumbFiles = await fs.readdir(thumbDir).catch(() => [])
             for (const f of thumbFiles) await fs.unlink(path.join(thumbDir, f)).catch(() => {})
         } catch {}
         
+        const movDir = getTabMovDir(tab)
         try {
             const movFiles = await fs.readdir(movDir).catch(() => [])
             for (const f of movFiles) await fs.unlink(path.join(movDir, f)).catch(() => {})
             await fs.unlink(path.join(movDir, '.filenames')).catch(() => {})
         } catch {}
         
+        const attDir = getTabAttDir(tab)
         try {
             const attFiles = await fs.readdir(attDir).catch(() => [])
             for (const f of attFiles) await fs.unlink(path.join(attDir, f)).catch(() => {})
@@ -1740,72 +2092,7 @@ exports.init = async api => {
         }
     }
     
-    async function uploadImage(ctx) {
-        const username = getCurrentUsername(ctx)
-        if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
-        try {
-            const body = ctx.request?.body || ctx.state?.params || {}
-            
-            if (!body.data) {
-                ctx.status = 400
-                ctx.body = { error: 'No image data provided' }
-                return
-            }
-            
-            const tab = body.tab
-            if (!tab) {
-                ctx.status = 400
-                ctx.body = { error: 'Tab name required' }
-                return
-            }
-            
-            const matches = body.data.match(/^data:image\/(\w+);base64,(.+)$/)
-            if (!matches) {
-                ctx.status = 400
-                ctx.body = { error: 'Invalid base64 format' }
-                return
-            }
-            
-            const fileBuffer = Buffer.from(matches[2], 'base64')
-            const originalName = body.name || `image.${matches[1]}`
-            
-            if (fileBuffer.length === 0) {
-                ctx.status = 400
-                ctx.body = { error: 'Empty file' }
-                return
-            }
-            
-            if (fileBuffer.length > MAX_IMG_SIZE) {
-                ctx.status = 400
-                ctx.body = { error: `File too large (max ${formatBytes(MAX_IMG_SIZE)})` }
-                return
-            }
-            
-            const tempDir = await ensureDir(getTempDir(tab))
-            const imageId = generateFileId(originalName)
-            const filePath = path.join(tempDir, imageId)
-            
-            await fs.writeFile(filePath, fileBuffer)
-            
-            const thumbDir = await ensureDir(getTabThumbDir(tab))
-            const thumbPath = path.join(thumbDir, imageId)
-            const hasThumb = await generateThumbnail(fileBuffer, thumbPath)
-            
-            ctx.body = { 
-                ok: true, 
-                imageId,
-                url: `/~/notes/img/temp/${tab}/${imageId}`,
-                hasThumb: hasThumb
-            }
-            ctx.status = 200
-        } catch (e) {
-            ctx.status = 500
-            ctx.body = { error: 'Upload failed: ' + e.message }
-        }
-    }
-    
-    async function uploadFile(ctx) {
+    async function uploadFileToTemp(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
 
@@ -1813,59 +2100,50 @@ exports.init = async api => {
             const body = ctx.request?.body || ctx.state?.params || {}
             if (!body.data) { ctx.status = 400; ctx.body = { error: 'No file data' }; return }
 
-            const tab = body.tab
-            if (!tab) { ctx.status = 400; ctx.body = { error: 'Tab name required' }; return }
-
             const matches = body.data.match(/^data:(.+);base64,(.+)$/)
             if (!matches) { ctx.status = 400; ctx.body = { error: 'Invalid base64 format' }; return }
 
             const mimeType = matches[1]
             const fileBuffer = Buffer.from(matches[2], 'base64')
             const originalName = body.name || 'file'
+            const displayName = body.displayName || originalName
 
             if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
-            if (fileBuffer.length > MAX_FILE_SIZE) {
-                ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(MAX_FILE_SIZE)})` }; return
+            
+            const isImage = mimeType.startsWith('image/')
+            const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
+            if (fileBuffer.length > maxSize) {
+                ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
             }
 
+            await ensureDir(TEMP_DIR)
+            const fileId = generateFileId(originalName)
+            const filePath = path.join(TEMP_DIR, fileId)
+            
+            await fs.writeFile(filePath, fileBuffer)
+            
             const isVideo = mimeType.startsWith('video/')
             const isAudio = mimeType.startsWith('audio/')
-            const isMedia = isVideo || isAudio
-
-            if (isMedia) {
-                const movDir = await ensureDir(getTabMovDir(tab))
-                const fileId = generateFileId(originalName)
-                const filePath = path.join(movDir, fileId)
-                await fs.writeFile(filePath, fileBuffer)
-                await saveFileName(tab, 'mov', fileId, sanitizeForDb(originalName))
-                
-                let hasVideoThumb = false
-                if (isVideo) {
-                    hasVideoThumb = await extractVideoThumbnail(filePath, tab, fileId)
-                }
-                
-                ctx.body = { 
-                    ok: true, 
-                    isVideo: isVideo, 
-                    isAudio: isAudio, 
-                    fileId, 
-                    url: `/~/notes/mov/${tab}/${fileId}`, 
-                    name: originalName,
-                    hasVideoThumb: hasVideoThumb
-                }
-            } else {
-                const attDir = await ensureDir(getTabAttDir(tab))
-                const fileId = generateFileId(originalName)
-                const filePath = path.join(attDir, fileId)
-                await fs.writeFile(filePath, fileBuffer)
-                await saveFileName(tab, 'att', fileId, sanitizeForDb(originalName))
-                ctx.body = { 
-                    ok: true, 
-                    isOther: true, 
-                    fileId, 
-                    url: `/~/notes/att/${tab}/${fileId}`, 
-                    name: originalName 
-                }
+            
+            let hasThumb = false
+            if (isImage) {
+                const thumbDir = await ensureDir(THUMB_BASE_DIR)
+                const thumbSubDir = path.join(thumbDir, '_temp')
+                await ensureDir(thumbSubDir)
+                const thumbPath = path.join(thumbSubDir, fileId)
+                hasThumb = await generateThumbnail(fileBuffer, thumbPath)
+            }
+            
+            ctx.body = { 
+                ok: true, 
+                fileId,
+                isImage,
+                isVideo,
+                isAudio,
+                isOther: !isImage && !isVideo && !isAudio,
+                url: `/~/notes/temp/${fileId}`,
+                name: displayName,
+                hasThumb
             }
             ctx.status = 200
         } catch (e) {
@@ -1873,29 +2151,57 @@ exports.init = async api => {
         }
     }
     
+    async function serveTempFile(ctx) {
+        const params = ctx.params || {}
+        const fileId = params.fileId
+        
+        if (!fileId) { ctx.status = 404; return }
+        
+        const filePath = path.join(TEMP_DIR, fileId)
+        
+        try {
+            await fs.stat(filePath)
+            const ext = path.extname(fileId).slice(1).toLowerCase()
+            const mimeTypes = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                'png': 'image/png', 'gif': 'image/gif',
+                'webp': 'image/webp', 'bmp': 'image/bmp',
+                'svg': 'image/svg+xml',
+                'mp4': 'video/mp4', 'webm': 'video/webm',
+                'ogg': 'video/ogg', 'mov': 'video/quicktime',
+                'mp3': 'audio/mpeg', 'wav': 'audio/wav',
+                'flac': 'audio/flac', 'aac': 'audio/aac',
+                'm4a': 'audio/mp4', 'opus': 'audio/opus'
+            }
+            ctx.type = mimeTypes[ext] || 'application/octet-stream'
+            ctx.set('Cache-Control', 'no-cache')
+            ctx.body = await fs.readFile(filePath)
+            ctx.status = 200
+        } catch {
+            ctx.status = 404
+        }
+    }
+    
     async function serveImage(ctx) {
         const params = ctx.params || {}
         const tab = params.tab
         const imageId = params.imageId
-        const isTemp = params.isTemp === 'temp'
         
         if (!tab || !imageId) { ctx.status = 404; return }
         
-        let filePath
-        
-        if (isTemp) {
-            filePath = path.join(getTempDir(tab), imageId)
-        } else {
-            filePath = path.join(getTabImgDir(tab), imageId)
+        let filePath = path.join(getTabImgDir(tab), imageId)
+        try {
+            await fs.stat(filePath)
+        } catch {
+            filePath = path.join(TEMP_DIR, imageId)
             try {
                 await fs.stat(filePath)
             } catch {
-                filePath = path.join(getTempDir(tab), imageId)
+                ctx.status = 404; return
             }
         }
         
         try {
-            await fs.stat(filePath)
             const ext = path.extname(imageId).slice(1).toLowerCase()
             const mimeTypes = {
                 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
@@ -1919,32 +2225,30 @@ exports.init = async api => {
         
         if (!tab || !thumbId) { ctx.status = 404; return }
         
-        const thumbPath = path.join(getTabThumbDir(tab), thumbId)
-        
+        let thumbPath = path.join(getTabThumbDir(tab), thumbId)
         try {
             await fs.stat(thumbPath)
-            ctx.type = 'image/jpeg'
+        } catch {
+            thumbPath = path.join(THUMB_BASE_DIR, '_temp', thumbId)
+            try {
+                await fs.stat(thumbPath)
+            } catch {
+                ctx.status = 404; return
+            }
+        }
+        
+        try {
+            const ext = path.extname(thumbId).slice(1).toLowerCase()
+            if (ext === 'gif') {
+                ctx.type = 'image/gif'
+            } else {
+                ctx.type = 'image/jpeg'
+            }
             ctx.set('Cache-Control', 'public, max-age=86400')
             ctx.body = await fs.readFile(thumbPath)
             ctx.status = 200
         } catch {
-            const imgDir = getTabImgDir(tab)
-            const imgPath = path.join(imgDir, thumbId)
-            try {
-                await fs.stat(imgPath)
-                const ext = path.extname(thumbId).slice(1).toLowerCase()
-                const mimeTypes = {
-                    'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
-                    'png': 'image/png', 'gif': 'image/gif',
-                    'webp': 'image/webp', 'bmp': 'image/bmp'
-                }
-                ctx.type = mimeTypes[ext] || 'image/jpeg'
-                ctx.set('Cache-Control', 'public, max-age=3600')
-                ctx.body = await fs.readFile(imgPath)
-                ctx.status = 200
-            } catch {
-                ctx.status = 404
-            }
+            ctx.status = 404
         }
     }
     
@@ -1953,7 +2257,19 @@ exports.init = async api => {
         const tab = params.tab
         const fileId = params.fileId
         if (!tab || !fileId) { ctx.status = 404; return }
-        const filePath = path.join(getTabMovDir(tab), fileId)
+        
+        let filePath = path.join(getTabMovDir(tab), fileId)
+        try {
+            await fs.stat(filePath)
+        } catch {
+            filePath = path.join(TEMP_DIR, fileId)
+            try {
+                await fs.stat(filePath)
+            } catch {
+                ctx.status = 404; return
+            }
+        }
+        
         try {
             const stat = await fs.stat(filePath)
             const fileSize = stat.size
@@ -1968,7 +2284,7 @@ exports.init = async api => {
             ctx.type = mimeMap[ext] || 'application/octet-stream'
             ctx.set('Accept-Ranges', 'bytes')
             
-            const originalName = await getFileName(tab, 'mov', fileId)
+            const originalName = await getFileName(tab, 'mov', fileId).catch(() => fileId)
             ctx.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(originalName)}`)
             
             const range = ctx.get('Range')
@@ -2005,11 +2321,21 @@ exports.init = async api => {
         const tab = params.tab
         const fileId = params.fileId
         if (!tab || !fileId) { ctx.status = 404; return }
-        const filePath = path.join(getTabAttDir(tab), fileId)
+        
+        let filePath = path.join(getTabAttDir(tab), fileId)
         try {
             await fs.stat(filePath)
-            
-            const originalName = await getFileName(tab, 'att', fileId)
+        } catch {
+            filePath = path.join(TEMP_DIR, fileId)
+            try {
+                await fs.stat(filePath)
+            } catch {
+                ctx.status = 404; return
+            }
+        }
+        
+        try {
+            const originalName = await getFileName(tab, 'att', fileId).catch(() => fileId)
             
             ctx.type = 'application/octet-stream'
             ctx.set('Cache-Control', 'no-cache')
@@ -2024,6 +2350,15 @@ exports.init = async api => {
             const p = ctx.path
             const method = ctx.method.toUpperCase()
             
+            if (p.startsWith('/~/notes/temp/')) {
+                const fileId = p.replace('/~/notes/temp/', '')
+                if (fileId) {
+                    ctx.params = { fileId }
+                    await serveTempFile(ctx)
+                } else { ctx.status = 404 }
+                return
+            }
+            
             if (p.startsWith('/~/notes/thumb/')) {
                 const parts = p.replace('/~/notes/thumb/', '').split('/')
                 if (parts.length >= 2) {
@@ -2034,15 +2369,13 @@ exports.init = async api => {
             }
             
             if (p.startsWith('/~/notes/img/')) {
-                const pathParts = p.replace('/~/notes/img/', '').split('/')
-                if (pathParts[0] === 'temp' && pathParts.length >= 3) {
-                    ctx.params = { isTemp: 'temp', tab: pathParts[1], imageId: pathParts.slice(2).join('/') }
-                } else if (pathParts.length >= 2) {
-                    ctx.params = { isTemp: 'false', tab: pathParts[0], imageId: pathParts.slice(1).join('/') }
+                const parts = p.replace('/~/notes/img/', '').split('/')
+                if (parts.length >= 2) {
+                    ctx.params = { tab: parts[0], imageId: parts.slice(1).join('/') }
+                    await serveImage(ctx)
                 } else {
                     ctx.status = 404; return
                 }
-                await serveImage(ctx)
                 return
             }
             
@@ -2077,8 +2410,7 @@ exports.init = async api => {
             if (p === `${API_BASE}delete` && method === 'POST') { await deleteNote(ctx); return }
             if (p === `${API_BASE}reorder-tabs` && method === 'POST') { await reorderTabs(ctx); return }
             if (p === `${API_BASE}rename-tab` && method === 'POST') { await renameTab(ctx); return }
-            if (p === `${API_BASE}upload-image` && method === 'POST') { await uploadImage(ctx); return }
-            if (p === `${API_BASE}upload-file` && method === 'POST') { await uploadFile(ctx); return }
+            if (p === `${API_BASE}upload` && method === 'POST') { await uploadFileToTemp(ctx); return }
             
             if (p === `${ADMIN_API}overview` && method === 'GET') { await adminOverview(ctx); return }
             if (p === `${ADMIN_API}export` && method === 'GET') { await adminExport(ctx); return }

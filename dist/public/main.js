@@ -19,7 +19,6 @@
         } catch { return false; }
     }
 
-    // 将文件名转为安全的 ASCII 名称，保留扩展名
     function sanitizeFileNameForUpload(originalName) {
         const ext = originalName.lastIndexOf('.') > 0 ? originalName.substring(originalName.lastIndexOf('.')) : '';
         const base = ext ? originalName.substring(0, originalName.lastIndexOf('.')) : originalName;
@@ -29,19 +28,18 @@
         return { safeName: safeBase + ext, displayName: originalName };
     }
 
-    async function uploadImage(file, tab) {
+    async function uploadFile(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = async () => {
                 try {
                     const { safeName, displayName } = sanitizeFileNameForUpload(file.name);
-                    const res = await fetch('/~/api/notes/upload-image', {
+                    const res = await fetch('/~/api/notes/upload', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             name: safeName,
                             data: reader.result,
-                            tab: tab,
                             displayName: displayName
                         })
                     });
@@ -57,60 +55,6 @@
             };
             reader.onerror = () => reject(new Error('Failed to read file'));
             reader.readAsDataURL(file);
-        });
-    }
-
-    async function uploadFileToServer(file, tab) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = async () => {
-                try {
-                    const { safeName, displayName } = sanitizeFileNameForUpload(file.name);
-                    const res = await fetch('/~/api/notes/upload-file', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            name: safeName,
-                            data: reader.result,
-                            tab: tab,
-                            displayName: displayName
-                        })
-                    });
-                    if (!res.ok) {
-                        const err = await res.json().catch(() => ({}));
-                        throw new Error(err.error || 'Upload failed');
-                    }
-                    const data = await res.json();
-                    resolve({ ...data, displayName: displayName });
-                } catch (e) { reject(e); }
-            };
-            reader.onerror = () => reject(new Error('Failed to read file'));
-            reader.readAsDataURL(file);
-        });
-    }
-
-    function createImagePicker(multiple = true) {
-        return new Promise((resolve, reject) => {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = 'image/*';
-            input.multiple = multiple;
-            input.onchange = async () => {
-                const files = Array.from(input.files);
-                if (files.length === 0) {
-                    reject(new Error('No file selected'));
-                    return;
-                }
-                for (const file of files) {
-                    if (file.size > 40 * 1024 * 1024) {
-                        HFS.toast(`Image "${file.name}" too large (max 40MB)`, 'error');
-                        reject(new Error('File too large'));
-                        return;
-                    }
-                }
-                resolve(files);
-            };
-            input.click();
         });
     }
 
@@ -135,12 +79,19 @@
         });
     }
 
-    function getVideoThumbPath(tab, fileId) {
+    function getVideoThumbPath(tab, fileId, thumbFormat) {
         const ext = fileId.split('.').pop();
         const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
         if (videoExts.includes(ext.toLowerCase())) {
             const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
-            return `/~/notes/thumb/${tab}/${baseName}.jpg`;
+            const jpgPath = `/~/notes/thumb/${tab}/${baseName}.jpg`;
+            const gifPath = `/~/notes/thumb/${tab}/${baseName}.gif`;
+            return {
+                jpg: jpgPath,
+                gif: gifPath,
+                primary: thumbFormat === 'gif' ? gifPath : jpgPath,
+                fallback: thumbFormat === 'gif' ? jpgPath : gifPath
+            };
         }
         return null;
     }
@@ -152,9 +103,6 @@
     let globalSetEditValue = null;
     let globalActiveTab = '';
 
-    /**
-     * 滚动锚定：锁定锚点元素的视口位置，执行操作后补偿滚动偏移
-     */
     function anchorScroll(container, anchorElement, callback) {
         if (!container || !anchorElement) {
             callback();
@@ -179,7 +127,71 @@
         });
     }
 
-    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName }) {
+    function AdaptiveThumbImage(props) {
+        const { src, alt, className, loading } = props;
+        const thumbSrc = src + '?get=thumb';
+        
+        const isGif = /\.gif(\?.*)?$/i.test(src);
+        
+        const [currentSrc, setCurrentSrc] = useState(isGif ? src : thumbSrc);
+        const [useThumb, setUseThumb] = useState(!isGif);
+        const [thumbFailed, setThumbFailed] = useState(isGif);
+        
+        const handleError = useCallback(() => {
+            if (useThumb && !thumbFailed) {
+                setThumbFailed(true);
+                setCurrentSrc(src);
+                setUseThumb(false);
+            }
+        }, [useThumb, thumbFailed, src]);
+        
+        const handleClick = useCallback((e) => {
+            e.stopPropagation();
+            
+            if (isGif) return;
+            if (thumbFailed) return;
+            
+            if (useThumb) {
+                setUseThumb(false);
+                setCurrentSrc(src);
+                HFS.toast('Switched to original image', 'info');
+            } else {
+                setUseThumb(true);
+                setCurrentSrc(thumbSrc);
+                HFS.toast('Switched to thumbnail', 'info');
+            }
+        }, [useThumb, thumbFailed, isGif, src, thumbSrc]);
+        
+        const handleLoad = useCallback((e) => {
+            e.currentTarget.style.opacity = '1';
+        }, []);
+        
+        return h('img', {
+            src: currentSrc,
+            alt: alt,
+            className: className,
+            loading: loading,
+            onClick: handleClick,
+            onError: handleError,
+            onLoad: handleLoad,
+            style: {
+                opacity: 0,
+                transition: 'opacity 0.5s ease-in-out',
+                cursor: isGif || thumbFailed ? 'default' : 'pointer'
+            },
+            title: isGif 
+                ? 'GIF Image' 
+                : (thumbFailed 
+                    ? 'Image (no thumbnail available)' 
+                    : (useThumb ? 'Click to view original image' : 'Click to view thumbnail')),
+            'data-original-src': src,
+            'data-thumb-src': thumbSrc,
+            'data-use-thumb': useThumb ? 'true' : 'false',
+            'data-is-gif': isGif ? 'true' : 'false'
+        });
+    }
+
+    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat }) {
         const { u, ts, starred, collapsed } = note;
         const summaryText = note.s || (note.m ? note.m.substring(0, 200) : '');
         const hasMoreContent = note.hasMore !== undefined ? note.hasMore : (note.m ? note.m.length > 200 : false);
@@ -276,11 +288,11 @@
                 const ci = payload.indexOf(':');
                 const fid = ci > -1 ? payload.substring(0, ci) : payload;
                 if (thumbMap[fid]) {
-                    paths[fid] = getVideoThumbPath(effectiveTab, fid);
+                    paths[fid] = getVideoThumbPath(effectiveTab, fid, thumbFormat);
                 }
             }
             return paths;
-        }, [thumbMap, fullContent, summaryText, effectiveTab]);
+        }, [thumbMap, fullContent, summaryText, effectiveTab, thumbFormat]);
 
         const loadFullContent = useCallback(async () => {
             if (fullContent !== null || loadingFull || !hasMoreContent) return;
@@ -306,7 +318,7 @@
             }
         }, [effectiveCollapsed, isFullscreenColumn, fullContent, hasMoreContent, loadFullContent]);
         
-        const handleDblClick = () => {
+        const handleDblClick = async () => {
             if (isFullscreenColumn) return;
             if (isOwner && !currentGuest) {
                 const noteEl = noteItemRef.current;
@@ -314,28 +326,63 @@
                 const headerRow = noteEl ? noteEl.querySelector('.note-header-row') : null;
                 const anchorEl = headerRow || noteEl;
                 
-                const enterEdit = () => {
-                    const content = fullContent || summaryText;
-                    setEditing(true);
-                    setEditVal(content);
-                    globalEditingNoteTs = ts;
-                    globalEditingTab = effectiveTab;
-                    globalEditValue = content;
-                    globalSetEditValue = setEditVal;
-                    globalActiveTab = effectiveTab;
+                const enterEdit = async () => {
+                    let content;
+                    
+                    if (fullContent === null && hasMoreContent) {
+                        setLoadingFull(true);
+                        try {
+                            const res = await fetch(`/~/api/notes/get-full?ts=${encodeURIComponent(ts)}&tab=${encodeURIComponent(effectiveTab)}`);
+                            if (res.ok) {
+                                const data = await res.json();
+                                content = data.m || summaryText;
+                                setFullContent(content);
+                            } else {
+                                content = summaryText;
+                                setFullContent(summaryText);
+                            }
+                        } catch (e) {
+                            content = summaryText;
+                            setFullContent(summaryText);
+                        } finally {
+                            setLoadingFull(false);
+                        }
+                    } else {
+                        content = fullContent || summaryText;
+                    }
+                    
+                    if (effectiveCollapsed) {
+                        if (currentGuest || isFullscreenColumn) {
+                            setLocalCollapsed(false);
+                        } else {
+                            onToggleCollapse(ts);
+                        }
+                    }
                     
                     setTimeout(() => {
-                        inputRef.current?.focus();
-                        if (textareaRef.current) {
-                            globalEditTextareaRef = textareaRef;
-                            textareaRef.current.style.height = 'auto';
-                            textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
-                        }
-                    }, 50);
+                        setEditing(true);
+                        setEditVal(content);
+                        globalEditingNoteTs = ts;
+                        globalEditingTab = effectiveTab;
+                        globalEditValue = content;
+                        globalSetEditValue = setEditVal;
+                        globalActiveTab = effectiveTab;
+                        
+                        setTimeout(() => {
+                            inputRef.current?.focus();
+                            if (textareaRef.current) {
+                                globalEditTextareaRef = textareaRef;
+                                textareaRef.current.style.height = 'auto';
+                                textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+                            }
+                        }, 50);
+                    }, effectiveCollapsed ? 150 : 0);
                 };
                 
                 if (scrollContainer && anchorEl) {
-                    anchorScroll(scrollContainer, anchorEl, enterEdit);
+                    anchorScroll(scrollContainer, anchorEl, () => {
+                        enterEdit();
+                    });
                 } else {
                     enterEdit();
                 }
@@ -418,19 +465,16 @@
                 let allMarks = '';
                 for (const file of files) {
                     try {
-                        if (file.type.startsWith('image/')) {
-                            const result = await uploadImage(file, effectiveTab);
-                            allMarks += `[img:${result.imageId}]`;
+                        const result = await uploadFile(file);
+                        const displayName = result.displayName || result.name || file.name;
+                        if (result.isImage) {
+                            allMarks += `[img:${result.fileId}]`;
+                        } else if (result.isVideo) {
+                            allMarks += `[mov:${result.fileId}:${displayName}]`;
+                        } else if (result.isAudio) {
+                            allMarks += `[mov:${result.fileId}:${displayName}]`;
                         } else {
-                            const result = await uploadFileToServer(file, effectiveTab);
-                            const displayName = result.displayName || result.name || file.name;
-                            if (result.isVideo) {
-                                allMarks += `[mov:${result.fileId}:${displayName}]`;
-                            } else if (result.isAudio) {
-                                allMarks += `[mov:${result.fileId}:${displayName}]`;
-                            } else {
-                                allMarks += `[att:${result.fileId}:${displayName}]`;
-                            }
+                            allMarks += `[att:${result.fileId}:${displayName}]`;
                         }
                     } catch (e) {
                         HFS.toast(`Failed to upload "${file.name}"`, 'error');
@@ -570,7 +614,7 @@
             
             return parts.map((part, i) => {
                 if (part.type === 'image') {
-                    const imgBase = isEditMode ? `/~/notes/img/temp/${effectiveTab}/` : `/~/notes/img/${effectiveTab}/`;
+                    const imgBase = isEditMode ? `/~/notes/temp/` : `/~/notes/img/${effectiveTab}/`;
                     const thumbBase = `/~/notes/thumb/${effectiveTab}/`;
                     const fullUrl = imgBase + part.imageId;
                     const thumbUrl = thumbBase + part.imageId;
@@ -581,7 +625,6 @@
                     const viewMode = imageViewMode[part.imageId] || 'thumbnail';
                     const useThumb = !isGif && !isEditMode && hasThumb && viewMode === 'thumbnail';
                     const initialSrc = useThumb ? thumbUrl : fullUrl;
-                    const isThumbMode = useThumb;
                     
                     return h('img', { 
                         key: `img-${i}`, 
@@ -589,7 +632,7 @@
                         'data-full-src': fullUrl,
                         'data-thumb-src': thumbUrl,
                         'data-has-thumb': hasThumb ? 'true' : 'false',
-                        'data-is-thumb': isThumbMode ? 'true' : 'false',
+                        'data-is-thumb': useThumb ? 'true' : 'false',
                         'data-image-id': part.imageId,
                         alt: isGif ? 'GIF Image' : 'Image',
                         className: 'note-inline-img',
@@ -628,7 +671,7 @@
                     const isAudio = audioExts.includes(ext);
                     const displayName = part.name || attNames[part.fileId] || part.fileId;
                     const hasThumb = thumbMap && thumbMap[part.fileId];
-                    const videoThumbPath = hasThumb ? (mediaThumbPaths[part.fileId] || getVideoThumbPath(effectiveTab, part.fileId)) : null;
+                    const videoThumbPaths = hasThumb ? (mediaThumbPaths[part.fileId] || getVideoThumbPath(effectiveTab, part.fileId, thumbFormat)) : null;
                     
                     if (isAudio) {
                         return h('div', { 
@@ -654,7 +697,15 @@
                         );
                     }
                     
+                    let videoThumbPath = null;
+                    let fallbackThumbPath = null;
+                    if (videoThumbPaths) {
+                        videoThumbPath = videoThumbPaths.primary;
+                        fallbackThumbPath = videoThumbPaths.fallback;
+                    }
+                    
                     if (videoThumbPath) {
+                        const isGifThumb = /\.gif$/i.test(videoThumbPath);
                         return h('div', { 
                             key: `media-${i}`, 
                             className: 'note-inline-mov'
@@ -676,16 +727,33 @@
                                     h('img', {
                                         src: videoThumbPath,
                                         alt: displayName,
-                                        className: 'note-mov-thumb-img',
+                                        className: `note-mov-thumb-img${isGifThumb ? ' note-mov-thumb-gif' : ''}`,
                                         loading: 'lazy',
-                                        onError: function(e) {
-                                            const wrapper = e.target.closest('.note-mov-wrapper');
+                                        onLoad: function(e) {
+                                            e.currentTarget.style.opacity = '1';
+                                        },
+onError: function(e) {
+    const img = e.currentTarget;
+    if (fallbackThumbPath && img.src !== fallbackThumbPath) {
+        img.src = fallbackThumbPath;
+        return;
+    }
+    if (!img.dataset.retried) {
+        img.dataset.retried = '1';
+        img.src = img.src.replace(/[?&]t=\d+/, '') + '?t=' + Date.now();
+        return;
+    }
+    const wrapper = img.closest('.note-mov-wrapper');
                                             if (wrapper) {
                                                 const thumbCover = wrapper.querySelector('.note-mov-thumb-cover');
                                                 if (thumbCover) thumbCover.style.display = 'none';
                                                 const placeholder = wrapper.querySelector('.note-mov-placeholder');
                                                 if (placeholder) placeholder.style.display = 'flex';
                                             }
+                                        },
+                                        style: {
+                                            opacity: 0,
+                                            transition: 'opacity 0.5s ease-in-out'
                                         }
                                     }),
                                     h('div', { className: 'note-mov-thumb-overlay' },
@@ -802,8 +870,154 @@
                     const key = `text-${i}-${j}`;
                     if (linkRegex.test(textPart)) {
                         if (imgExtRegex.test(textPart)) {
+                            const isHttpUrl = /^https?:\/\//i.test(textPart);
+                            if (isHttpUrl) {
+                                return h(AdaptiveThumbImage, { 
+                                    key, 
+                                    src: textPart, 
+                                    alt: textPart, 
+                                    className: 'note-inline-img',
+                                    loading: 'lazy'
+                                });
+                            }
                             return h('img', { key, src: textPart, alt: textPart, className: 'note-inline-img', loading: 'lazy' });
                         }
+                        const httpVideoExtRegex = /^https?:\/\/.+\.(mp4|webm|ogg|mov|avi|mkv|wmv|flv|ts|rmvb|rm|dat|vob)(\?.*)?$/i;
+                        if (httpVideoExtRegex.test(textPart)) {
+                            const videoUrl = textPart;
+                            const videoNameMatch = videoUrl.match(/\/([^\/]+)\.(mp4|webm|ogg|mov|avi|mkv|wmv|flv|ts|rmvb|rm|dat|vob)(\?.*)?$/i);
+                            if (videoNameMatch) {
+                                const videoBaseName = videoNameMatch[1];
+                                const videoDir = videoUrl.substring(0, videoUrl.lastIndexOf('/'));
+                                const gifCoverUrl = `${videoDir}/cache/videothumbnail/${videoBaseName}.gif`;
+                                const jpgCoverUrl = `${videoDir}/cache/videothumbnail/${videoBaseName}.jpg`;
+                                const displayName = videoBaseName + '.' + videoNameMatch[2];
+                                
+                                return h('div', { 
+                                    key: `http-video-${i}-${j}`, 
+                                    className: 'note-inline-mov'
+                                },
+                                    h('div', { 
+                                        className: 'note-mov-wrapper',
+                                        onClick: function(e) {
+                                            const wrapper = e.currentTarget;
+                                            const thumbCover = wrapper.querySelector('.note-mov-thumb-cover');
+                                            const placeholder = wrapper.querySelector('.note-mov-placeholder');
+                                            const video = wrapper.querySelector('video');
+                                            
+                                            if (thumbCover) thumbCover.style.display = 'none';
+                                            if (placeholder) placeholder.style.display = 'none';
+                                            if (video) {
+                                                video.style.display = 'block';
+                                                video.play().catch(() => {});
+                                            }
+                                        }
+                                    },
+                                        h('div', { className: 'note-mov-thumb-cover' },
+                                            h('img', {
+                                                src: gifCoverUrl,
+                                                'data-fallback-src': jpgCoverUrl,
+                                                alt: displayName,
+                                                className: 'note-mov-thumb-img',
+                                                loading: 'lazy',
+                                                onLoad: function(e) {
+                                                    e.currentTarget.style.opacity = '1';
+                                                },
+                                                onError: function(e) {
+                                                    const img = e.currentTarget;
+                                                    const fallback = img.dataset.fallbackSrc;
+                                                    if (fallback && img.src !== fallback) {
+                                                        img.src = fallback;
+                                                    } else {
+                                                        img.style.display = 'none';
+                                                        const wrapper = img.closest('.note-mov-wrapper');
+                                                        if (wrapper) {
+                                                            const placeholder = wrapper.querySelector('.note-mov-placeholder');
+                                                            if (placeholder) placeholder.style.display = 'flex';
+                                                        }
+                                                    }
+                                                },
+                                                style: {
+                                                    opacity: 0,
+                                                    transition: 'opacity 0.5s ease-in-out'
+                                                }
+                                            }),
+                                            h('div', { className: 'note-mov-thumb-overlay' },
+                                                h('div', { className: 'note-mov-placeholder-bg' },
+                                                    h('span', { className: 'note-mov-play-icon' }, '\u25B6')
+                                                ),
+                                                h('div', { className: 'note-mov-placeholder-info' },
+                                                    h('span', { className: 'note-mov-placeholder-text' }, 'Click to play video'),
+                                                    h('span', { 
+                                                        className: 'note-mov-filename',
+                                                        title: videoUrl
+                                                    }, displayName)
+                                                )
+                                            )
+                                        ),
+                                        h('div', { 
+                                            className: 'note-mov-placeholder', 
+                                            style: { display: 'none' }
+                                        },
+                                            h('div', { className: 'note-mov-placeholder-bg' },
+                                                h('span', { className: 'note-mov-play-icon' }, '\u25B6')
+                                            ),
+                                            h('div', { className: 'note-mov-placeholder-info' },
+                                                h('span', { className: 'note-mov-placeholder-text' }, 'Click to play video'),
+                                                h('span', { 
+                                                    className: 'note-mov-filename',
+                                                    title: videoUrl
+                                                }, displayName)
+                                            )
+                                        ),
+                                        h('video', { 
+                                            className: 'note-mov-player',
+                                            style: { display: 'none' },
+                                            controls: true,
+                                            preload: 'metadata',
+                                            onPlay: function(e) {
+                                                const wrapper = e.target.closest('.note-mov-wrapper');
+                                                const placeholder = wrapper?.querySelector('.note-mov-placeholder');
+                                                const thumbCover = wrapper?.querySelector('.note-mov-thumb-cover');
+                                                if (placeholder) placeholder.style.display = 'none';
+                                                if (thumbCover) thumbCover.style.display = 'none';
+                                                e.target.style.display = 'block';
+                                            },
+                                            onPause: function(e) {
+                                                e.target.style.display = 'block';
+                                            }
+                                        },
+                                            h('source', { src: videoUrl })
+                                        )
+                                    )
+                                );
+                            }
+                        }
+                        const httpAudioExtRegex = /^https?:\/\/.+\.(mp3|wav|flac|aac|m4a|opus|ogg|oga|wma|ape|aiff|alac|dsf|dff)(\?.*)?$/i;
+                        if (httpAudioExtRegex.test(textPart)) {
+                            return h('div', { 
+                                key: `http-audio-${i}-${j}`, 
+                                className: 'note-inline-audio'
+                            },
+                                h('div', { className: 'note-audio-wrapper' },
+                                    h('div', { className: 'note-audio-info' },
+                                        h('span', { className: 'note-audio-icon' }, '\uD83C\uDFB5'),
+                                        h('span', { 
+                                            className: 'note-audio-filename',
+                                            title: textPart
+                                        }, decodeURIComponent(textPart.split('/').pop() || textPart))
+                                    ),
+                                    h('audio', { 
+                                        className: 'note-audio-player',
+                                        controls: true,
+                                        preload: 'metadata',
+                                        style: { width: '100%' }
+                                    },
+                                        h('source', { src: textPart })
+                                    )
+                                )
+                            );
+                        }    
                         return h('a', { key, href: textPart, target: '_blank', rel: 'noopener noreferrer', className: 'note-inline-link' }, textPart);
                     }
                     return applyHighlight(textPart);
@@ -813,8 +1027,10 @@
 
         const getCoverImage = (content) => {
             if (!content) return null;
+            
             const imgMatch = content.match(/\[img:(.+?)\]/);
             if (imgMatch) return { type: 'image', id: imgMatch[1] };
+            
             const movMatch = content.match(/\[mov:(.+?):(.+?)\]/);
             if (movMatch) {
                 const fileId = movMatch[1];
@@ -822,9 +1038,25 @@
                 const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
                 if (videoExts.includes(ext)) {
                     const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
-                    return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg` };
+                    return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg`, thumbPathGif: `${baseName}.gif` };
                 }
             }
+            
+            const httpImgRegex = /(https?:\/\/\S+\.(?:jpe?g|tiff?|png|webp|bmp)(?:\?\S*)?)/gi;
+            const httpImgMatch = content.match(httpImgRegex);
+            if (httpImgMatch) {
+                const nonGifImages = httpImgMatch.filter(url => !/\.gif(\?.*)?$/i.test(url));
+                if (nonGifImages.length > 0) {
+                    const firstImageUrl = nonGifImages[0];
+                    return { 
+                        type: 'http', 
+                        id: firstImageUrl,
+                        url: firstImageUrl,
+                        thumbUrl: firstImageUrl + '?get=thumb'
+                    };
+                }
+            }
+            
             return null;
         };
 
@@ -899,12 +1131,12 @@
                             className: 'note-img-upload-btn', 
                             onClick: handleEditUpload,
                             title: 'Upload files (multi-select supported)'
-                        }, '\uD83D\uDCCE'),
+                        }, 'Ⓤ'),
                         h('button', { 
                             className: 'note-copy-btn', 
                             onClick: handleCopyAll,
                             title: 'Copy all content'
-                        }, '\uD83D\uDCCB'),
+                        }, 'Ⓒ'),
                         h('button', { className: 'note-save-btn', onClick: handleSave }, '\u2713'),
                         h('button', { className: 'note-cancel-btn', onClick: handleCancel }, '\u2715')
                     )
@@ -942,9 +1174,11 @@
         const lineCount = displayContent ? displayContent.split('\n').length : 0;
         const showFooter = !isFullscreenColumn && !isCollapsed && lineCount > 10;
         const coverData = getCoverImage(displayContent);
-        const coverImageId = coverData?.id || null;
         const coverType = coverData?.type || null;
         const plainText = getPlainText(displayContent);
+
+        const hasCover = coverData !== null;
+        const coverImageId = coverData?.id || null;
 
         let coverSrc = '';
         let coverExt = '';
@@ -959,8 +1193,20 @@
                 ? `/~/notes/thumb/${effectiveTab}/${coverImageId}`
                 : `/~/notes/img/${effectiveTab}/${coverImageId}`;
         } else if (coverType === 'video') {
-            coverSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
+            const gifPath = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPathGif}`;
+            const jpgPath = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
+            if (thumbFormat === 'gif') {
+                coverSrc = gifPath;
+                coverIsGif = true;
+            } else {
+                coverSrc = jpgPath;
+                coverIsGif = false;
+            }
             coverHasThumb = true;
+        } else if (coverType === 'http') {
+            coverSrc = coverData.thumbUrl;
+            coverHasThumb = true;
+            coverIsGif = false;
         }
         
         const canManage = isAdminUser || isOwner;
@@ -995,8 +1241,116 @@
                     }, '\u00D7')
                 )
             ),
-            isCollapsed && coverImageId ? 
-                h('div', { 
+            isCollapsed && hasCover ? (() => {
+                if (coverType === 'http') {
+                    const httpCoverSrc = coverData.url;
+                    const httpThumbSrc = coverData.thumbUrl;
+                    
+                    return h('div', { 
+                        className: 'note-cover-wrapper',
+                        onClick: handleCoverClick
+                    },
+                        h('div', { className: 'note-cover-image-container' },
+                            h('img', {
+                                src: httpThumbSrc,
+                                'data-full-src': httpCoverSrc,
+                                'data-thumb-src': httpThumbSrc,
+                                'data-is-thumb': 'true',
+                                'data-has-thumb': 'true',
+                                alt: 'Cover',
+                                className: 'note-cover-image',
+                                loading: 'lazy',
+                                onClick: function(e) {
+                                    e.stopPropagation();
+                                    const img = e.currentTarget;
+                                    const fullSrc = img.dataset.fullSrc;
+                                    const thumbSrc = img.dataset.thumbSrc;
+                                    const isCurrentlyThumb = img.dataset.isThumb === 'true';
+                                    
+                                    if (isCurrentlyThumb) {
+                                        img.src = fullSrc;
+                                        img.dataset.isThumb = 'false';
+                                        img.title = 'Click to view thumbnail';
+                                        HFS.toast('Switched to original image', 'info');
+                                    } else {
+                                        img.src = thumbSrc;
+                                        img.dataset.isThumb = 'true';
+                                        img.title = 'Click to view original image';
+                                        HFS.toast('Switched to thumbnail', 'info');
+                                    }
+                                },
+                                onError: function(e) {
+                                    const img = e.currentTarget;
+                                    if (img.dataset.isThumb === 'true') {
+                                        img.src = img.dataset.fullSrc;
+                                        img.dataset.isThumb = 'false';
+                                        img.dataset.hasThumb = 'false';
+                                        img.title = 'Image (no thumbnail available)';
+                                    }
+                                },
+                                onLoad: function(e) {
+                                    e.currentTarget.style.opacity = '1';
+                                },
+                                style: { 
+                                    opacity: 0, 
+                                    transition: 'opacity 0.5s ease-in-out',
+                                    cursor: 'pointer'
+                                },
+                                title: 'Click to view original image'
+                            }),
+                            h('div', { className: 'note-cover-overlay' }),
+                            plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
+                        )
+                    );
+                }
+                
+                if (coverType === 'video') {
+                    const gifThumbSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPathGif}`;
+                    const jpgThumbSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
+                    const primarySrc = thumbFormat === 'gif' ? gifThumbSrc : jpgThumbSrc;
+                    const fallbackSrc = thumbFormat === 'gif' ? jpgThumbSrc : gifThumbSrc;
+                    
+                    return h('div', { 
+                        className: 'note-cover-wrapper',
+                        onClick: handleCoverClick
+                    },
+                        h('div', { className: 'note-cover-image-container' },
+                            h('img', {
+                                src: primarySrc,
+                                'data-fallback-src': fallbackSrc,
+                                alt: 'Cover',
+                                className: 'note-cover-image',
+                                loading: 'lazy',
+                                onError: function(e) {
+    const img = e.currentTarget;
+    const fallback = img.dataset.fallbackSrc;
+    if (fallback && img.src !== fallback) {
+        img.src = fallback;
+        return;
+    }
+    if (!img.dataset.retried) {
+        img.dataset.retried = '1';
+        img.src = img.src.replace(/[?&]t=\d+/, '') + '?t=' + Date.now();
+        return;
+    }
+},
+                                onLoad: function(e) {
+                                    e.currentTarget.style.opacity = '1';
+                                },
+                                style: { 
+                                    opacity: 0, 
+                                    transition: 'opacity 0.5s ease-in-out',
+                                    cursor: 'default'
+                                },
+                                title: 'Video Cover'
+                            }),
+                            h('div', { className: 'note-cover-overlay' }),
+                            plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
+                        )
+                    );
+                }
+                
+                return h('div', { 
                     className: 'note-cover-wrapper',
                     onClick: handleCoverClick
                 },
@@ -1011,14 +1365,12 @@
                             alt: 'Cover',
                             className: 'note-cover-image',
                             loading: 'lazy',
-                            onClick: function(e) {
-                                e.stopPropagation();
-                            },
                             onError: function(e) {
                                 const img = e.currentTarget;
-                                if (img.dataset.hasThumb === 'true' && img.src !== img.dataset.fullSrc) {
-                                    img.src = img.dataset.fullSrc;
-                                    img.dataset.hasThumb = 'false';
+                                if (img.dataset.isGif === 'true') {
+                                    const jpgSrc = `/~/notes/thumb/${effectiveTab}/${coverImageId.replace(/\.[^.]+$/, '.jpg')}`;
+                                    img.src = jpgSrc;
+                                    img.dataset.isGif = 'false';
                                 }
                             },
                             onLoad: function(e) {
@@ -1027,14 +1379,15 @@
                             style: { 
                                 opacity: 0, 
                                 transition: 'opacity 0.5s ease-in-out',
-                                cursor: 'default'
+                                cursor: coverIsGif ? 'default' : 'pointer'
                             },
                             title: coverIsGif ? 'GIF Image' : 'Cover Image'
                         }),
                         h('div', { className: 'note-cover-overlay' }),
                         plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
                     )
-                )
+                );
+            })()
             :
                 h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` }, 
                     isCollapsed 
@@ -1066,7 +1419,7 @@
     }
 
     function NotePanel({ onClose }) {
-        const CACHE_TTL = 5 * 60 * 1000; // 缓存有效期：5分钟
+        const CACHE_TTL = 5 * 60 * 1000;
         
         const getCachedInput = () => {
             try {
@@ -1109,6 +1462,7 @@
         const [isFullscreen, setIsFullscreen] = useState(false);
         const [otherTabData, setOtherTabData] = useState({});
         const [tabClickCount, setTabClickCount] = useState({});
+        const [thumbFormat, setThumbFormat] = useState('jpg');
         const tabClickTimerRef = useRef({});
         const tabClickCountRef = useRef({});
         const isLoadingMoreRef = useRef(false);
@@ -1121,7 +1475,6 @@
         const esRef = useRef(null);
         const loadNotesAbortControllerRef = useRef(null);
         
-        // Tab内容缓存（关闭note时保留，不清除）
         const tabCacheRef = useRef({});
         
         const inputRef = useRef(null);
@@ -1159,17 +1512,15 @@
         useEffect(() => {
             if (!activeTab) return;
             
-            // 检查缓存
             const cached = tabCacheRef.current[activeTab];
             if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-                // 缓存有效，立即显示
                 setNotes(cached.notes);
                 setThumbMap(cached.thumbMap);
                 setAttNames(cached.attNames);
                 setHasMore(cached.hasMore);
                 setCurrentOffset(cached.offset);
+                if (cached.thumbFormat) setThumbFormat(cached.thumbFormat);
             } else {
-                // 无缓存或已过期
                 setNotes([]);
                 setHasMore(false);
                 setCurrentOffset(0);
@@ -1220,7 +1571,6 @@
             
             shouldAutoScrollRef.current = true;
             
-            // 始终从服务器加载最新数据
             loadNotes(activeTab, false);
             
             setupSSE(activeTab);
@@ -1247,7 +1597,6 @@
                 globalEditValue = '';
                 globalSetEditValue = null;
                 globalActiveTab = '';
-                // 组件卸载时清理缓存
                 tabCacheRef.current = {};
                 fullContentFallbackRef.current = {};
             };
@@ -1387,19 +1736,16 @@
                         let allMarks = '';
                         for (const file of files) {
                             try {
-                                if (file.type.startsWith('image/')) {
-                                    const result = await uploadImage(file, activeTabRef.current);
-                                    allMarks += `[img:${result.imageId}]`;
+                                const result = await uploadFile(file);
+                                const displayName = result.displayName || result.name || file.name;
+                                if (result.isImage) {
+                                    allMarks += `[img:${result.fileId}]`;
+                                } else if (result.isVideo) {
+                                    allMarks += `[mov:${result.fileId}:${displayName}]`;
+                                } else if (result.isAudio) {
+                                    allMarks += `[mov:${result.fileId}:${displayName}]`;
                                 } else {
-                                    const result = await uploadFileToServer(file, activeTabRef.current);
-                                    const displayName = result.displayName || result.name || file.name;
-                                    if (result.isVideo) {
-                                        allMarks += `[mov:${result.fileId}:${displayName}]`;
-                                    } else if (result.isAudio) {
-                                        allMarks += `[mov:${result.fileId}:${displayName}]`;
-                                    } else {
-                                        allMarks += `[att:${result.fileId}:${displayName}]`;
-                                    }
+                                    allMarks += `[att:${result.fileId}:${displayName}]`;
                                 }
                             } catch (e) {
                                 HFS.toast(`Failed to upload "${file.name}"`, 'error');
@@ -1522,19 +1868,16 @@
                     let allMarks = '';
                     for (const file of files) {
                         try {
-                            if (file.type.startsWith('image/')) {
-                                const result = await uploadImage(file, activeTabRef.current);
-                                allMarks += `[img:${result.imageId}]`;
+                            const result = await uploadFile(file);
+                            const displayName = result.displayName || result.name || file.name;
+                            if (result.isImage) {
+                                allMarks += `[img:${result.fileId}]`;
+                            } else if (result.isVideo) {
+                                allMarks += `[mov:${result.fileId}:${displayName}]`;
+                            } else if (result.isAudio) {
+                                allMarks += `[mov:${result.fileId}:${displayName}]`;
                             } else {
-                                const result = await uploadFileToServer(file, activeTabRef.current);
-                                const displayName = result.displayName || result.name || file.name;
-                                if (result.isVideo) {
-                                    allMarks += `[mov:${result.fileId}:${displayName}]`;
-                                } else if (result.isAudio) {
-                                    allMarks += `[mov:${result.fileId}:${displayName}]`;
-                                } else {
-                                    allMarks += `[att:${result.fileId}:${displayName}]`;
-                                }
+                                allMarks += `[att:${result.fileId}:${displayName}]`;
                             }
                         } catch (e) {
                             HFS.toast(`Failed to upload "${file.name}"`, 'error');
@@ -1658,7 +2001,6 @@
         }, [tabNames]);
 
         const handleClose = () => {
-            // 只清理连接类资源，保留数据缓存
             if (observerRef.current) {
                 observerRef.current.disconnect();
                 observerRef.current = null;
@@ -1671,14 +2013,12 @@
                 esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
                 esRef.current = null;
             }
-            // 清理全局编辑状态
             globalEditingNoteTs = null;
             globalEditingTab = null;
             globalEditTextareaRef = null;
             globalEditValue = '';
             globalSetEditValue = null;
             globalActiveTab = '';
-            // 不清理 tabCacheRef 和 fullContentFallbackRef，保留缓存
             setClosing(true);
             setTimeout(onClose, 300);
         };
@@ -1914,6 +2254,7 @@
                 
                 const newThumbMap = data.thumbMap || {};
                 const newFileNames = data.fileNames || {};
+                const newThumbFormat = data.thumbFormat || 'jpg';
                 
                 if (append) {
                     setNotes(prev => {
@@ -1926,7 +2267,8 @@
                             attNames: { ...attNames, ...newFileNames },
                             hasMore: data.hasMore || false,
                             offset: offset + notesWithTab.length,
-                            timestamp: Date.now()
+                            timestamp: Date.now(),
+                            thumbFormat: newThumbFormat
                         };
                         return combined;
                     });
@@ -1942,9 +2284,11 @@
                         attNames: newFileNames,
                         hasMore: data.hasMore || false,
                         offset: notesWithTab.length,
-                        timestamp: Date.now()
+                        timestamp: Date.now(),
+                        thumbFormat: newThumbFormat
                     };
                 }
+                setThumbFormat(newThumbFormat);
                 const newHasMore = data.hasMore || false;
                 setHasMore(newHasMore);
                 setCurrentOffset(offset + notesWithTab.length);
@@ -1972,7 +2316,8 @@
                     [tab]: {
                         notes: notesWithTab,
                         thumbMap: data.thumbMap || {},
-                        fileNames: data.fileNames || {}
+                        fileNames: data.fileNames || {},
+                        thumbFormat: data.thumbFormat || 'jpg'
                     }
                 }));
             } catch (e) {}
@@ -2091,14 +2436,39 @@
         useEffect(() => {
             if (!listRef.current) return;
             if (!shouldAutoScrollRef.current) return;
-            
-            requestAnimationFrame(() => {
-                if (listRef.current) {
-                    listRef.current.scrollTop = listRef.current.scrollHeight;
+
+            const container = listRef.current;
+            const images = container.querySelectorAll('img');
+
+            if (images.length === 0) {
+                requestAnimationFrame(() => {
+                    container.scrollTop = container.scrollHeight;
+                });
+                return;
+            }
+
+            const imageLoadPromises = Array.from(images).map(img => {
+                if (img.complete) {
+                    return Promise.resolve();
                 }
+                return new Promise(resolve => {
+                    img.addEventListener('load', resolve, { once: true });
+                    img.addEventListener('error', resolve, { once: true });
+                });
             });
-            
-            shouldAutoScrollRef.current = true;
+
+            const timeoutPromise = new Promise(resolve => setTimeout(resolve, 5000));
+
+            Promise.race([
+                Promise.all(imageLoadPromises),
+                timeoutPromise
+            ]).then(() => {
+                requestAnimationFrame(() => {
+                    if (container && shouldAutoScrollRef.current) {
+                        container.scrollTop = container.scrollHeight;
+                    }
+                });
+            });
         }, [notes]);
 
         const displayNotes = useMemo(() => {
@@ -2314,7 +2684,7 @@
                             setTimeout(() => searchInputRef.current?.focus(), 50);
                         },
                         title: 'Search'
-                    }, showSearch ? 'ⓢ' : 'ⓢ'),
+                    }, showSearch ? '\u24E2' : '\u24E2'),
                     searchTerm && h('span', { className: 'note-header-stats' },
                         `${filteredNotes.length} notes / ${totalMatches} matches`
                     ),
@@ -2413,8 +2783,8 @@
                     fullscreenColumns.map((tab, colIdx) => {
                         const isActive = tab === activeTab;
                         const tabData = isActive 
-                            ? { notes: fullscreenActiveNotes, thumbMap, fileNames: attNames }
-                            : (otherTabData[tab] || { notes: [], thumbMap: {}, fileNames: {} });
+                            ? { notes: fullscreenActiveNotes, thumbMap, fileNames: attNames, thumbFormat }
+                            : (otherTabData[tab] || { notes: [], thumbMap: {}, fileNames: {}, thumbFormat: 'jpg' });
                         
                         return h('div', { 
                             className: `note-fullscreen-column ${isActive ? 'note-fullscreen-column-active' : ''}`,
@@ -2438,7 +2808,8 @@
                                         fontSize: fontSize - 1,
                                         thumbMap: tabData.thumbMap,
                                         attNames: tabData.fileNames,
-                                        isFullscreenColumn: !isActive
+                                        isFullscreenColumn: !isActive,
+                                        thumbFormat: tabData.thumbFormat
                                     }))
                                     : h('div', { className: 'note-empty' }, isActive ? 'No notes' : 'Loading...')
                             )
@@ -2472,7 +2843,8 @@
                             fontSize,
                             thumbMap,
                             attNames,
-                            isFullscreenColumn: false
+                            isFullscreenColumn: false,
+                            thumbFormat
                         }))
                         : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
                 ),
