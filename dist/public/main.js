@@ -857,14 +857,40 @@ onError: function(e) {
                         )
                     );
                 }
-                if (part.type === 'attachment') {
-                    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
-                    const displayName = part.name || attNames[part.fileId] || part.fileId;
-                    return h('span', { key: `att-${i}`, className: 'note-inline-att' },
-                        h('span', { className: 'note-att-icon' }, '\u2B07'),
-                        h('a', { href: attUrl, download: displayName, className: 'note-att-link' }, displayName)
-                    );
-                }
+
+if (part.type === 'attachment') {
+    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
+    const displayName = part.name || attNames[part.fileId] || part.fileId;
+    
+    const handleDownload = async (e) => {
+        e.preventDefault();
+        try {
+            const response = await fetch(attUrl);
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = displayName;  
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+        } catch (error) {
+            window.open(attUrl, '_blank');
+        }
+    };
+    
+    return h('span', { key: `att-${i}`, className: 'note-inline-att' },
+        h('span', { className: 'note-att-icon' }, '\u2B07'),
+        h('a', { 
+            href: '#',
+            onClick: handleDownload,
+            className: 'note-att-link',
+            title: `Download: ${displayName}`
+        }, displayName)
+    );
+}
+
                 const textParts = part.content.split(linkRegex);
                 return textParts.map((textPart, j) => {
                     const key = `text-${i}-${j}`;
@@ -2033,7 +2059,6 @@ onError: function(e) {
             const handleClickOutside = (e) => {
                 const panel = panelRef.current;
                 if (!panel || closing) return;
-                
                 const rect = panel.getBoundingClientRect();
                 const margin = 100;
                 
@@ -2049,12 +2074,9 @@ onError: function(e) {
                 }
             };
             
-            document.addEventListener('click', handleClickOutside);
-            
-            return () => {
-                document.removeEventListener('click', handleClickOutside);
-            };
-        }, [closing, isDesktopDevice]);
+           document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+}, [closing, isDesktopDevice]);
 
         const toggleFullscreen = useCallback(() => {
             const el = document.documentElement;

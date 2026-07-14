@@ -1091,7 +1091,7 @@
 
 .note-mov-thumb-overlay .note-mov-placeholder-info {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     gap: 6px;
 }
 
@@ -1106,7 +1106,7 @@
 }
 
 .note-mov-thumb-overlay .note-mov-filename {
-    font-size: 0.7em;
+    font-size: 0.75em;
     max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
