@@ -857,40 +857,14 @@ onError: function(e) {
                         )
                     );
                 }
-
-if (part.type === 'attachment') {
-    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
-    const displayName = part.name || attNames[part.fileId] || part.fileId;
-    
-    const handleDownload = async (e) => {
-        e.preventDefault();
-        try {
-            const response = await fetch(attUrl);
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = displayName;  
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            setTimeout(() => URL.revokeObjectURL(url), 5000);
-        } catch (error) {
-            window.open(attUrl, '_blank');
-        }
-    };
-    
-    return h('span', { key: `att-${i}`, className: 'note-inline-att' },
-        h('span', { className: 'note-att-icon' }, '\u2B07'),
-        h('a', { 
-            href: '#',
-            onClick: handleDownload,
-            className: 'note-att-link',
-            title: `Download: ${displayName}`
-        }, displayName)
-    );
-}
-
+                if (part.type === 'attachment') {
+                    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
+                    const displayName = part.name || attNames[part.fileId] || part.fileId;
+                    return h('span', { key: `att-${i}`, className: 'note-inline-att' },
+                        h('span', { className: 'note-att-icon' }, '\u2B07'),
+                        h('a', { href: attUrl, download: displayName, className: 'note-att-link' }, displayName)
+                    );
+                }
                 const textParts = part.content.split(linkRegex);
                 return textParts.map((textPart, j) => {
                     const key = `text-${i}-${j}`;
@@ -1052,39 +1026,61 @@ if (part.type === 'attachment') {
         };
 
         const getCoverImage = (content) => {
-            if (!content) return null;
-            
-            const imgMatch = content.match(/\[img:(.+?)\]/);
-            if (imgMatch) return { type: 'image', id: imgMatch[1] };
-            
-            const movMatch = content.match(/\[mov:(.+?):(.+?)\]/);
-            if (movMatch) {
-                const fileId = movMatch[1];
-                const ext = fileId.split('.').pop()?.toLowerCase();
-                const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
-                if (videoExts.includes(ext)) {
-                    const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
-                    return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg`, thumbPathGif: `${baseName}.gif` };
-                }
-            }
-            
-            const httpImgRegex = /(https?:\/\/\S+\.(?:jpe?g|tiff?|png|webp|bmp)(?:\?\S*)?)/gi;
-            const httpImgMatch = content.match(httpImgRegex);
-            if (httpImgMatch) {
-                const nonGifImages = httpImgMatch.filter(url => !/\.gif(\?.*)?$/i.test(url));
-                if (nonGifImages.length > 0) {
-                    const firstImageUrl = nonGifImages[0];
-                    return { 
-                        type: 'http', 
-                        id: firstImageUrl,
-                        url: firstImageUrl,
-                        thumbUrl: firstImageUrl + '?get=thumb'
-                    };
-                }
-            }
-            
-            return null;
-        };
+    if (!content) return null;
+    
+    const imgMatch = content.match(/\[img:(.+?)\]/);
+    if (imgMatch) return { type: 'image', id: imgMatch[1] };
+    
+    const movMatch = content.match(/\[mov:(.+?):(.+?)\]/);
+    if (movMatch) {
+        const fileId = movMatch[1];
+        const ext = fileId.split('.').pop()?.toLowerCase();
+        const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
+        if (videoExts.includes(ext)) {
+            const baseName = fileId.substring(0, fileId.lastIndexOf('.'));
+            return { type: 'video', id: fileId, thumbPath: `${baseName}.jpg`, thumbPathGif: `${baseName}.gif` };
+        }
+    }
+    
+    // HTTP 视频链接识别
+    const httpVideoRegex = /(https?:\/\/[^\s]+\.(?:mp4|webm|ogg|mov|avi|mkv|wmv|flv|ts|rmvb|rm|dat|vob)(?:\?[^\s]*)?)/gi;
+    const httpVideoMatch = content.match(httpVideoRegex);
+    if (httpVideoMatch) {
+        const videoUrl = httpVideoMatch[0];
+        const videoNameMatch = videoUrl.match(/\/([^\/]+)\.(mp4|webm|ogg|mov|avi|mkv|wmv|flv|ts|rmvb|rm|dat|vob)(\?.*)?$/i);
+        if (videoNameMatch) {
+            const videoBaseName = videoNameMatch[1];
+            const videoDir = videoUrl.substring(0, videoUrl.lastIndexOf('/'));
+            const gifCoverUrl = `${videoDir}/cache/videothumbnail/${videoBaseName}.gif`;
+            const jpgCoverUrl = `${videoDir}/cache/videothumbnail/${videoBaseName}.jpg`;
+            return { 
+                type: 'http_video', 
+                id: videoUrl,
+                url: videoUrl,
+                thumbPath: jpgCoverUrl,
+                thumbPathGif: gifCoverUrl,
+                displayName: videoBaseName + '.' + videoNameMatch[2]
+            };
+        }
+    }
+    
+    const httpImgRegex = /(https?:\/\/\S+\.(?:jpe?g|tiff?|png|webp|bmp)(?:\?\S*)?)/gi;
+    const httpImgMatch = content.match(httpImgRegex);
+    if (httpImgMatch) {
+        const nonGifImages = httpImgMatch.filter(url => !/\.gif(\?.*)?$/i.test(url));
+        if (nonGifImages.length > 0) {
+            const firstImageUrl = nonGifImages[0];
+            return { 
+                type: 'http', 
+                id: firstImageUrl,
+                url: firstImageUrl,
+                thumbUrl: firstImageUrl + '?get=thumb'
+            };
+        }
+    }
+    
+    return null;
+};
 
         const getPlainText = (content) => {
             if (!content) return '';
@@ -1268,160 +1264,227 @@ if (part.type === 'attachment') {
                 )
             ),
             isCollapsed && hasCover ? (() => {
-                if (coverType === 'http') {
-                    const httpCoverSrc = coverData.url;
-                    const httpThumbSrc = coverData.thumbUrl;
-                    
-                    return h('div', { 
-                        className: 'note-cover-wrapper',
-                        onClick: handleCoverClick
+    // HTTP 图片处理
+    if (coverType === 'http') {
+        const httpCoverSrc = coverData.url;
+        const httpThumbSrc = coverData.thumbUrl;
+        
+        return h('div', { 
+            className: 'note-cover-wrapper',
+            onClick: handleCoverClick
+        },
+            h('div', { className: 'note-cover-image-container' },
+                h('img', {
+                    src: httpThumbSrc,
+                    'data-full-src': httpCoverSrc,
+                    'data-thumb-src': httpThumbSrc,
+                    'data-is-thumb': 'true',
+                    'data-has-thumb': 'true',
+                    alt: 'Cover',
+                    className: 'note-cover-image',
+                    loading: 'lazy',
+                    onClick: function(e) {
+                        e.stopPropagation();
+                        const img = e.currentTarget;
+                        const fullSrc = img.dataset.fullSrc;
+                        const thumbSrc = img.dataset.thumbSrc;
+                        const isCurrentlyThumb = img.dataset.isThumb === 'true';
+                        
+                        if (isCurrentlyThumb) {
+                            img.src = fullSrc;
+                            img.dataset.isThumb = 'false';
+                            img.title = 'Click to view thumbnail';
+                            HFS.toast('Switched to original image', 'info');
+                        } else {
+                            img.src = thumbSrc;
+                            img.dataset.isThumb = 'true';
+                            img.title = 'Click to view original image';
+                            HFS.toast('Switched to thumbnail', 'info');
+                        }
                     },
-                        h('div', { className: 'note-cover-image-container' },
-                            h('img', {
-                                src: httpThumbSrc,
-                                'data-full-src': httpCoverSrc,
-                                'data-thumb-src': httpThumbSrc,
-                                'data-is-thumb': 'true',
-                                'data-has-thumb': 'true',
-                                alt: 'Cover',
-                                className: 'note-cover-image',
-                                loading: 'lazy',
-                                onClick: function(e) {
-                                    e.stopPropagation();
-                                    const img = e.currentTarget;
-                                    const fullSrc = img.dataset.fullSrc;
-                                    const thumbSrc = img.dataset.thumbSrc;
-                                    const isCurrentlyThumb = img.dataset.isThumb === 'true';
-                                    
-                                    if (isCurrentlyThumb) {
-                                        img.src = fullSrc;
-                                        img.dataset.isThumb = 'false';
-                                        img.title = 'Click to view thumbnail';
-                                        HFS.toast('Switched to original image', 'info');
-                                    } else {
-                                        img.src = thumbSrc;
-                                        img.dataset.isThumb = 'true';
-                                        img.title = 'Click to view original image';
-                                        HFS.toast('Switched to thumbnail', 'info');
-                                    }
-                                },
-                                onError: function(e) {
-                                    const img = e.currentTarget;
-                                    if (img.dataset.isThumb === 'true') {
-                                        img.src = img.dataset.fullSrc;
-                                        img.dataset.isThumb = 'false';
-                                        img.dataset.hasThumb = 'false';
-                                        img.title = 'Image (no thumbnail available)';
-                                    }
-                                },
-                                onLoad: function(e) {
-                                    e.currentTarget.style.opacity = '1';
-                                },
-                                style: { 
-                                    opacity: 0, 
-                                    transition: 'opacity 0.5s ease-in-out',
-                                    cursor: 'pointer'
-                                },
-                                title: 'Click to view original image'
-                            }),
-                            h('div', { className: 'note-cover-overlay' }),
-                            plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
-                        )
-                    );
-                }
-                
-                if (coverType === 'video') {
-                    const gifThumbSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPathGif}`;
-                    const jpgThumbSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
-                    const primarySrc = thumbFormat === 'gif' ? gifThumbSrc : jpgThumbSrc;
-                    const fallbackSrc = thumbFormat === 'gif' ? jpgThumbSrc : gifThumbSrc;
-                    
-                    return h('div', { 
-                        className: 'note-cover-wrapper',
-                        onClick: handleCoverClick
+                    onError: function(e) {
+                        const img = e.currentTarget;
+                        if (img.dataset.isThumb === 'true') {
+                            img.src = img.dataset.fullSrc;
+                            img.dataset.isThumb = 'false';
+                            img.dataset.hasThumb = 'false';
+                            img.title = 'Image (no thumbnail available)';
+                        }
                     },
-                        h('div', { className: 'note-cover-image-container' },
-                            h('img', {
-                                src: primarySrc,
-                                'data-fallback-src': fallbackSrc,
-                                alt: 'Cover',
-                                className: 'note-cover-image',
-                                loading: 'lazy',
-                                onError: function(e) {
-    const img = e.currentTarget;
-    const fallback = img.dataset.fallbackSrc;
-    if (fallback && img.src !== fallback) {
-        img.src = fallback;
-        return;
+                    onLoad: function(e) {
+                        e.currentTarget.style.opacity = '1';
+                    },
+                    style: { 
+                        opacity: 0, 
+                        transition: 'opacity 0.5s ease-in-out',
+                        cursor: 'pointer'
+                    },
+                    title: 'Click to view original image'
+                }),
+                h('div', { className: 'note-cover-overlay' }),
+                plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
+            )
+        );
     }
-    if (!img.dataset.retried) {
-        img.dataset.retried = '1';
-        img.src = img.src.replace(/[?&]t=\d+/, '') + '?t=' + Date.now();
-        return;
+    
+    // 内部视频处理 ([mov:...])
+    else if (coverType === 'video') {
+        const gifThumbSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPathGif}`;
+        const jpgThumbSrc = `/~/notes/thumb/${effectiveTab}/${coverData.thumbPath}`;
+        const primarySrc = thumbFormat === 'gif' ? gifThumbSrc : jpgThumbSrc;
+        const fallbackSrc = thumbFormat === 'gif' ? jpgThumbSrc : gifThumbSrc;
+        
+        return h('div', { 
+            className: 'note-cover-wrapper',
+            onClick: handleCoverClick
+        },
+            h('div', { className: 'note-cover-image-container' },
+                h('img', {
+                    src: primarySrc,
+                    'data-fallback-src': fallbackSrc,
+                    alt: 'Cover',
+                    className: 'note-cover-image',
+                    loading: 'lazy',
+                    onError: function(e) {
+                        const img = e.currentTarget;
+                        const fallback = img.dataset.fallbackSrc;
+                        if (fallback && img.src !== fallback) {
+                            img.src = fallback;
+                            return;
+                        }
+                        if (!img.dataset.retried) {
+                            img.dataset.retried = '1';
+                            img.src = img.src.replace(/[?&]t=\d+/, '') + '?t=' + Date.now();
+                            return;
+                        }
+                    },
+                    onLoad: function(e) {
+                        e.currentTarget.style.opacity = '1';
+                    },
+                    style: { 
+                        opacity: 0, 
+                        transition: 'opacity 0.5s ease-in-out',
+                        cursor: 'default'
+                    },
+                    title: 'Video Cover'
+                }),
+                h('div', { className: 'note-cover-overlay' }),
+                plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
+            )
+        );
     }
-},
-                                onLoad: function(e) {
-                                    e.currentTarget.style.opacity = '1';
-                                },
-                                style: { 
-                                    opacity: 0, 
-                                    transition: 'opacity 0.5s ease-in-out',
-                                    cursor: 'default'
-                                },
-                                title: 'Video Cover'
-                            }),
-                            h('div', { className: 'note-cover-overlay' }),
-                            plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
-                        )
-                    );
-                }
-                
-                return h('div', { 
-                    className: 'note-cover-wrapper',
-                    onClick: handleCoverClick
-                },
-                    h('div', { className: 'note-cover-image-container' },
-                        h('img', {
-                            src: coverSrc,
-                            'data-full-src': `/~/notes/img/${effectiveTab}/${coverImageId}`,
-                            'data-thumb-src': `/~/notes/thumb/${effectiveTab}/${coverImageId}`,
-                            'data-has-thumb': coverHasThumb ? 'true' : 'false',
-                            'data-is-gif': coverIsGif ? 'true' : 'false',
-                            'data-image-id': coverImageId,
-                            alt: 'Cover',
-                            className: 'note-cover-image',
-                            loading: 'lazy',
-                            onError: function(e) {
-                                const img = e.currentTarget;
-                                if (img.dataset.isGif === 'true') {
-                                    const jpgSrc = `/~/notes/thumb/${effectiveTab}/${coverImageId.replace(/\.[^.]+$/, '.jpg')}`;
-                                    img.src = jpgSrc;
-                                    img.dataset.isGif = 'false';
-                                }
-                            },
-                            onLoad: function(e) {
-                                e.currentTarget.style.opacity = '1';
-                            },
-                            style: { 
-                                opacity: 0, 
-                                transition: 'opacity 0.5s ease-in-out',
-                                cursor: coverIsGif ? 'default' : 'pointer'
-                            },
-                            title: coverIsGif ? 'GIF Image' : 'Cover Image'
-                        }),
-                        h('div', { className: 'note-cover-overlay' }),
-                        plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
-                    )
-                );
-            })()
-            :
-                h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` }, 
-                    isCollapsed 
-                        ? getPlainText(summaryText)
-                        : (loadingFull 
-                            ? h('span', { style: { opacity: 0.5, fontStyle: 'italic' } }, 'Loading...')
-                            : renderContentWithHighlight(displayContent, false))
-                ),
+    
+    // HTTP 视频处理（新增）
+    else if (coverType === 'http_video') {
+        const gifThumbSrc = coverData.thumbPathGif;
+        const jpgThumbSrc = coverData.thumbPath;
+        const primarySrc = thumbFormat === 'gif' ? gifThumbSrc : jpgThumbSrc;
+        const fallbackSrc = thumbFormat === 'gif' ? jpgThumbSrc : gifThumbSrc;
+        const displayName = coverData.displayName || 'Video';
+        
+        return h('div', { 
+            className: 'note-cover-wrapper',
+            onClick: handleCoverClick
+        },
+            h('div', { className: 'note-cover-image-container' },
+                h('img', {
+                    src: primarySrc,
+                    'data-fallback-src': fallbackSrc,
+                    alt: displayName,
+                    className: 'note-cover-image',
+                    loading: 'lazy',
+                    onError: function(e) {
+                        const img = e.currentTarget;
+                        const fallback = img.dataset.fallbackSrc;
+                        if (fallback && img.src !== fallback) {
+                            img.src = fallback;
+                            return;
+                        }
+                        if (!img.dataset.retried) {
+                            img.dataset.retried = '1';
+                            img.src = img.src.replace(/[?&]t=\d+/, '') + '?t=' + Date.now();
+                            return;
+                        }
+                        // 如果都失败，显示占位
+                        const container = img.closest('.note-cover-image-container');
+                        if (container) {
+                            const overlay = container.querySelector('.note-cover-overlay');
+                            if (overlay) {
+                                overlay.innerHTML = '🎬 ' + displayName;
+                                overlay.style.display = 'flex';
+                                overlay.style.alignItems = 'center';
+                                overlay.style.justifyContent = 'center';
+                                overlay.style.fontSize = '14px';
+                                overlay.style.color = '#fff';
+                                overlay.style.background = 'rgba(0,0,0,0.6)';
+                            }
+                        }
+                    },
+                    onLoad: function(e) {
+                        e.currentTarget.style.opacity = '1';
+                    },
+                    style: { 
+                        opacity: 0, 
+                        transition: 'opacity 0.5s ease-in-out',
+                        cursor: 'default'
+                    },
+                    title: 'Video Cover: ' + displayName
+                }),
+                h('div', { className: 'note-cover-overlay' }),
+                plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
+            )
+        );
+    }
+    
+    // 内部图片处理
+    else {
+        return h('div', { 
+            className: 'note-cover-wrapper',
+            onClick: handleCoverClick
+        },
+            h('div', { className: 'note-cover-image-container' },
+                h('img', {
+                    src: coverSrc,
+                    'data-full-src': `/~/notes/img/${effectiveTab}/${coverImageId}`,
+                    'data-thumb-src': `/~/notes/thumb/${effectiveTab}/${coverImageId}`,
+                    'data-has-thumb': coverHasThumb ? 'true' : 'false',
+                    'data-is-gif': coverIsGif ? 'true' : 'false',
+                    'data-image-id': coverImageId,
+                    alt: 'Cover',
+                    className: 'note-cover-image',
+                    loading: 'lazy',
+                    onError: function(e) {
+                        const img = e.currentTarget;
+                        if (img.dataset.isGif === 'true') {
+                            const jpgSrc = `/~/notes/thumb/${effectiveTab}/${coverImageId.replace(/\.[^.]+$/, '.jpg')}`;
+                            img.src = jpgSrc;
+                            img.dataset.isGif = 'false';
+                        }
+                    },
+                    onLoad: function(e) {
+                        e.currentTarget.style.opacity = '1';
+                    },
+                    style: { 
+                        opacity: 0, 
+                        transition: 'opacity 0.5s ease-in-out',
+                        cursor: coverIsGif ? 'default' : 'pointer'
+                    },
+                    title: coverIsGif ? 'GIF Image' : 'Cover Image'
+                }),
+                h('div', { className: 'note-cover-overlay' }),
+                plainText ? h('div', { className: 'note-cover-text' }, plainText) : null
+            )
+        );
+    }
+})()
+:
+h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` }, 
+    isCollapsed 
+        ? getPlainText(summaryText)
+        : (loadingFull 
+            ? h('span', { style: { opacity: 0.5, fontStyle: 'italic' } }, 'Loading...')
+            : renderContentWithHighlight(displayContent, false))
+),
             isCollapsed && !coverImageId && h('div', { className: 'note-collapsed-indicator' }, '\u2026'),
             showFooter && h('div', { className: 'note-footer-bar' },
                 h('div', { className: 'note-footer-info' },
@@ -2059,6 +2122,7 @@ if (part.type === 'attachment') {
             const handleClickOutside = (e) => {
                 const panel = panelRef.current;
                 if (!panel || closing) return;
+                
                 const rect = panel.getBoundingClientRect();
                 const margin = 100;
                 
@@ -2074,9 +2138,12 @@ if (part.type === 'attachment') {
                 }
             };
             
-           document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
-}, [closing, isDesktopDevice]);
+            document.addEventListener('click', handleClickOutside);
+            
+            return () => {
+                document.removeEventListener('click', handleClickOutside);
+            };
+        }, [closing, isDesktopDevice]);
 
         const toggleFullscreen = useCallback(() => {
             const el = document.documentElement;
