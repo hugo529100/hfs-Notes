@@ -1,4 +1,4 @@
-exports.version = 3.2
+exports.version = 3.3
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -233,14 +233,14 @@ exports.init = async api => {
     const BACKUP_DIR = path.join(storage, 'backup')
     const TABS_MAP_FILE = path.join(TABS_DIR, '_tabs_map.json')
 
-    const SPAM_DELAY = 200
-    const MAX_STORAGE_WARNING = 400
-    const MAX_IMG_SIZE = 40 * 1024 * 1024
-    const MAX_FILE_SIZE = 200 * 1024 * 1024
-    const TEMP_FILE_TTL = 60 * 1000
-    const THUMB_QUALITY = 70
-    const PAGE_SIZE = 10
-    const SUMMARY_LENGTH = 200
+const SPAM_DELAY = 1000              // 防抖延迟(ms)
+const MAX_STORAGE_WARNING = 400     // 存储警告阈值(条)
+const MAX_IMG_SIZE = 80 * 1024 * 1024   // 图片最大尺寸
+const MAX_FILE_SIZE = 200 * 1024 * 1024 // 附件最大尺寸
+const TEMP_FILE_TTL = 60 * 1000     // 临时文件保留时间(ms)
+const THUMB_QUALITY = 70            // 缩略图质量(1-100)
+const PAGE_SIZE = 10                // 分页大小(条数)
+const SUMMARY_LENGTH = 200          // 摘要截取长度(字符)
 
     let backupTimer = null
     let midnightCleanupTimer = null
@@ -371,6 +371,7 @@ function generateFileId(originalName) {
     const ext = path.extname(originalName) || ''
     const baseName = path.basename(originalName, ext)
     // 文件名格式：年月日时分秒_随机数_原始文件名
+    // 确保原始文件名中的特殊字符被保留
     return `${dateStr}_${rand}_${baseName}${ext}`
 }
 
@@ -567,7 +568,10 @@ async function getFileName(tab, type, fileId) {
     if (parts.length >= 3) {
         // 移除前两个部分（时间和随机数）
         const originalParts = parts.slice(2)
-        return originalParts.join('_')
+        // 重新组合，保持原始文件名中的下划线
+        const originalName = originalParts.join('_')
+        // 如果有扩展名，保留
+        return originalName
     }
     return fileId
 }
@@ -2370,33 +2374,73 @@ ctx.body = {
     }
 
     async function serveAtt(ctx) {
-        const params = ctx.params || {}
-        const tab = params.tab
-        const fileId = params.fileId
-        if (!tab || !fileId) { ctx.status = 404; return }
-        
-        let filePath = path.join(getTabAttDir(tab), fileId)
+    const params = ctx.params || {}
+    const tab = params.tab
+    let fileId = params.fileId
+    
+    if (!tab || !fileId) { ctx.status = 404; return }
+    
+    // 对 fileId 进行 URL 解码
+    try {
+        fileId = decodeURIComponent(fileId)
+    } catch (e) {
+        // 如果解码失败，使用原始值
+    }
+    
+    // 尝试多个路径
+    let filePath = path.join(getTabAttDir(tab), fileId)
+    try {
+        await fs.stat(filePath)
+    } catch {
+        // 尝试 URL 编码的版本
+        const encodedFileId = encodeURIComponent(fileId)
+        filePath = path.join(getTabAttDir(tab), encodedFileId)
         try {
             await fs.stat(filePath)
         } catch {
+            // 尝试临时目录
             filePath = path.join(TEMP_DIR, fileId)
             try {
                 await fs.stat(filePath)
             } catch {
-                ctx.status = 404; return
+                filePath = path.join(TEMP_DIR, encodedFileId)
+                try {
+                    await fs.stat(filePath)
+                } catch {
+                    ctx.status = 404
+                    ctx.body = { error: 'File not found' }
+                    return
+                }
             }
         }
-        
-        try {
-            const originalName = await getFileName(tab, 'att', fileId).catch(() => fileId)
-            
-            ctx.type = 'application/octet-stream'
-            ctx.set('Cache-Control', 'no-cache')
-            ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(originalName)}`)
-            ctx.body = await fs.readFile(filePath)
-            ctx.status = 200
-        } catch { ctx.status = 404 }
     }
+    
+    try {
+        const originalName = await getFileName(tab, 'att', fileId).catch(() => fileId)
+        
+        ctx.type = 'application/octet-stream'
+        ctx.set('Cache-Control', 'no-cache')
+        
+        const encodedName = encodeURIComponent(originalName)
+            .replace(/['()]/g, escape)
+            .replace(/\*/g, '%2A');
+        
+        ctx.set('Content-Disposition', 
+            `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
+        );
+        
+        ctx.set('Access-Control-Allow-Origin', '*')
+        ctx.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        ctx.set('Access-Control-Allow-Headers', 'Content-Type')
+        ctx.set('X-Content-Type-Options', 'nosniff')
+        
+        ctx.body = await fs.readFile(filePath)
+        ctx.status = 200
+    } catch (err) {
+        console.error('Serve attachment error:', err)
+        ctx.status = 404
+    }
+}
     
     return {
         async middleware(ctx) {

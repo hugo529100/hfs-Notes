@@ -188,7 +188,7 @@ function sanitizeFileNameForUpload(originalName) {
         });
     }
 
-    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat }) {
+    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat, isVisible = false }) {
         const { u, ts, starred, collapsed } = note;
         const summaryText = note.s || (note.m ? note.m.substring(0, 200) : '');
         const hasMoreContent = note.hasMore !== undefined ? note.hasMore : (note.m ? note.m.length > 200 : false);
@@ -213,7 +213,7 @@ function sanitizeFileNameForUpload(originalName) {
         
         const effectiveTab = tabName || activeTab;
         
-        const effectiveCollapsed = isFullscreenColumn ? true : (localCollapsed !== null ? localCollapsed : (collapsed || false));
+        const effectiveCollapsed = localCollapsed !== null ? localCollapsed : (collapsed || false);
         
         useEffect(() => {
             setEditing(false);
@@ -274,6 +274,8 @@ function sanitizeFileNameForUpload(originalName) {
             };
         }, [editing, ts, effectiveTab, editVal]);
         
+
+
         const mediaThumbPaths = useMemo(() => {
             const paths = {};
             if (!thumbMap) return paths;
@@ -310,10 +312,10 @@ function sanitizeFileNameForUpload(originalName) {
         }, [fullContent, loadingFull, hasMoreContent, ts, effectiveTab, summaryText]);
         
         useEffect(() => {
-            if (!effectiveCollapsed && !isFullscreenColumn && fullContent === null && hasMoreContent) {
-                loadFullContent();
-            }
-        }, [effectiveCollapsed, isFullscreenColumn, fullContent, hasMoreContent, loadFullContent]);
+    if (!effectiveCollapsed && fullContent === null && hasMoreContent) {
+        loadFullContent();
+    }
+}, [effectiveCollapsed, fullContent, hasMoreContent, loadFullContent]);
         
         const handleDblClick = async () => {
             if (isFullscreenColumn) return;
@@ -541,6 +543,54 @@ function sanitizeFileNameForUpload(originalName) {
                 img.title = 'Click to view original image';
             }
         };
+
+// 在 NoteItem 组件中，在 renderContentWithHighlight 函数之前添加
+const handleAttachmentDownload = useCallback(async (fileId, displayName, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (currentGuest) {
+        HFS.toast('Please login to download files', 'info');
+        return;
+    }
+    
+    try {
+        // 关键：不要对 fileId 进行 encodeURIComponent，直接使用
+        // 因为 fileId 中可能包含 % 字符，但服务器需要的是原始文件名
+        const url = `/~/notes/att/${encodeURIComponent(effectiveTab)}/${fileId}`;
+        
+        // 或者使用 decodeURIComponent 解码 fileId
+        // const decodedFileId = decodeURIComponent(fileId);
+        // const url = `/~/notes/att/${encodeURIComponent(effectiveTab)}/${decodedFileId}`;
+        
+        HFS.toast('Downloading...', 'info');
+        
+        const response = await fetch(url, {
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/octet-stream'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = displayName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 10000);
+        HFS.toast(`Downloaded: ${displayName}`, 'success');
+    } catch (err) {
+        console.error('Download error:', err);
+        HFS.toast(`Download failed: ${err.message}`, 'error');
+    }
+}, [effectiveTab, currentGuest]);
 
         const renderContentWithHighlight = (content, isEditMode) => {
             if (!content) return '';
@@ -854,22 +904,47 @@ onError: function(e) {
                         )
                     );
                 }
-                if (part.type === 'attachment') {
-    const attUrl = `/~/notes/att/${effectiveTab}/${part.fileId}`;
-    // 从 attNames 获取原始文件名，如果没有则从 fileId 中提取
+if (part.type === 'attachment') {
     let displayName = attNames[part.fileId] || part.name || part.fileId;
     if (!attNames[part.fileId] && !part.name) {
-        // 从 fileId 中提取原始文件名
         const parts = part.fileId.split('_');
         if (parts.length >= 3) {
             displayName = parts.slice(2).join('_');
         }
     }
+    
+    const handleDownload = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (currentGuest) {
+            HFS.toast('Please login to download files', 'info');
+            return;
+        }
+        
+        // 使用 iframe 下载，无闪烁
+        const url = `/~/notes/att/${effectiveTab}/${part.fileId}`;
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = url;
+        document.body.appendChild(iframe);
+        // 下载完成后移除 iframe
+        setTimeout(() => {
+            document.body.removeChild(iframe);
+        }, 5000);
+    };
+    
     return h('span', { key: `att-${i}`, className: 'note-inline-att' },
         h('span', { className: 'note-att-icon' }, '\u2B07'),
-        h('a', { href: attUrl, download: displayName, className: 'note-att-link' }, displayName)
+        h('a', { 
+            href: '#',
+            onClick: handleDownload,
+            className: 'note-att-link',
+            title: `Download: ${displayName}`
+        }, displayName)
     );
 }
+
                 const textParts = part.content.split(linkRegex);
                 return textParts.map((textPart, j) => {
                     const key = `text-${i}-${j}`;
@@ -1238,13 +1313,13 @@ onError: function(e) {
         
         const canManage = isAdminUser || isOwner;
         
-        return h('div', { 
-            className: `note-item ${starred ? 'note-item-starred' : ''} ${isCollapsed && coverImageId ? 'note-item-has-cover' : ''} ${isFullscreenColumn ? 'note-item-compact' : ''}`, 
-            onDblClick: handleDblClick,
-            ref: noteItemRef,
-            'data-note-ts': ts,
-            style: { fontSize: fontSize + 'px' }
-        },
+return h('div', { 
+    className: `note-item ${starred ? 'note-item-starred' : ''} ${isCollapsed && coverImageId ? 'note-item-has-cover' : ''} ${isFullscreenColumn ? 'note-item-compact' : ''} ${isVisible ? 'note-item-visible' : ''}`, 
+    onDblClick: handleDblClick,
+    ref: noteItemRef,
+    'data-note-ts': ts,
+    style: { fontSize: fontSize + 'px' }
+},
             h('div', { className: 'note-header-row' },
                 h('div', { className: 'note-meta' },
                     h('span', { className: 'note-ts' }, new Date(ts).toLocaleString()),
@@ -1256,11 +1331,11 @@ onError: function(e) {
                     }, '\u2605')
                 ),
                 h('div', { className: 'note-header-actions' },
-                    !isFullscreenColumn && h('button', {
-                        className: 'note-collapse-btn',
-                        onClick: handleCollapseToggle,
-                        title: isCollapsed ? 'Expand note' : 'Collapse note'
-                    }, isCollapsed ? '\u25B6' : '\u25BC'),
+                    h('button', {
+    className: 'note-collapse-btn',
+    onClick: handleCollapseToggle,
+    title: isCollapsed ? 'Expand note' : 'Collapse note'
+}, isCollapsed ? '\u25B6' : '\u25BC'),
                     canManage && h('button', {
                         className: 'note-delete-btn',
                         onClick: handleDeleteClick,
@@ -1557,6 +1632,8 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
         const [otherTabData, setOtherTabData] = useState({});
         const [tabClickCount, setTabClickCount] = useState({});
         const [thumbFormat, setThumbFormat] = useState('jpg');
+const [visibleItems, setVisibleItems] = useState(new Set());
+const revealTimerRef = useRef(null);
         const tabClickTimerRef = useRef({});
         const tabClickCountRef = useRef({});
         const isLoadingMoreRef = useRef(false);
@@ -1669,7 +1746,27 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
             
             setupSSE(activeTab);
             
-        }, [activeTab]);
+         let scrollAttempts = 0;
+    const maxAttempts = 3;  // 约 1 秒（15 × 70ms）
+    
+    const persistentScroll = () => {
+        if (isFullscreen) return;
+        if (scrollAttempts >= maxAttempts) return;
+        if (!listRef.current) return;
+        
+        // 滚动到底部
+        listRef.current.scrollTop = listRef.current.scrollHeight;
+        scrollAttempts++;
+        
+        // 每隔 70ms 滚动一次
+        setTimeout(persistentScroll, 100);
+    };
+    
+    // 延迟 100ms 开始，确保内容已渲染
+    setTimeout(persistentScroll, 300);
+    // ========== 新增结束 ==========
+
+        }, [activeTab, isFullscreen]);
 
         useEffect(() => {
             return () => {
@@ -1697,10 +1794,10 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
         }, []);
 
         const setupSSE = useCallback((tab) => {
-            if (esRef.current) {
-                esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
-                esRef.current = null;
-            }
+    if (esRef.current) {
+        esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
+        esRef.current = null;
+    }
 
             try {
                 esRef.current = HFS.getNotifications('notes', (e, data) => {
@@ -2596,6 +2693,65 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
             return { filteredNotes: filtered, totalMatches: total, noteMatchMap: matchMap };
         }, [displayNotes, searchTerm]);
 
+// ========== 逐条显示逻辑 ==========
+useEffect(() => {
+    // 重置可见集合
+    setVisibleItems(new Set());
+    
+    if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = null;
+    }
+    
+    const notesList = filteredNotes;
+    if (notesList.length === 0) return;
+    
+    // 先禁用过渡
+    if (listRef.current) {
+        listRef.current.classList.add('no-transition');
+    }
+    
+    // 延迟一帧，让 DOM 先渲染
+    requestAnimationFrame(() => {
+        let index = 0;
+        const revealNext = () => {
+            if (index >= notesList.length) {
+                // 全部显示完毕，移除 no-transition
+                if (listRef.current) {
+                    listRef.current.classList.remove('no-transition');
+                }
+                // 滚动到底部
+                if (listRef.current && shouldAutoScrollRef.current) {
+                    listRef.current.scrollTop = listRef.current.scrollHeight;
+                }
+                return;
+            }
+            
+            setVisibleItems(prev => {
+                const newSet = new Set(prev);
+                const note = notesList[index];
+                if (note && note.ts) {
+                    newSet.add(note.ts);
+                }
+                return newSet;
+            });
+            
+            index++;
+            revealTimerRef.current = setTimeout(revealNext, 60);
+        };
+        
+        revealTimerRef.current = setTimeout(revealNext, 30);
+    });
+    
+    return () => {
+        if (revealTimerRef.current) {
+            clearTimeout(revealTimerRef.current);
+            revealTimerRef.current = null;
+        }
+    };
+}, [filteredNotes]);
+// ========== 结束 ==========
+
         useEffect(() => {
             setCurrentMatch(0);
         }, [searchTerm]);
@@ -2911,7 +3067,11 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
                     })
                 )
             :
-                h('div', { className: 'note-items', ref: listRef, style: { overscrollBehavior: 'contain' } },
+h('div', { 
+    className: 'note-items',
+    ref: listRef, 
+    style: { overscrollBehavior: 'contain' } 
+},
                     h('div', { 
                         ref: sentinelRef,
                         className: 'note-loading-indicator note-loading-clickable',
@@ -2938,7 +3098,8 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
                             thumbMap,
                             attNames,
                             isFullscreenColumn: false,
-                            thumbFormat
+                            thumbFormat,
+                            isVisible: visibleItems.has(note.ts)
                         }))
                         : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
                 ),

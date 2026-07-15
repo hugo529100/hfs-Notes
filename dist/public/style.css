@@ -1049,9 +1049,10 @@
     align-items: center;
     justify-content: center;
     gap: 12px;
-    background: rgba(0, 0, 0, 0.35);
     border-radius: 4px;
-    /*opacity: 0.6;*/
+    /*opacity: 0.6;
+    background: rgba(0, 0, 0, 0.35);
+    */
 }
 
 .note-mov-thumb-overlay:hover {
@@ -1366,6 +1367,9 @@
     overflow-y: auto;
     padding: 4px;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }
 
 .note-items.note-items-fullscreen .note-cover-overlay {
@@ -1426,8 +1430,100 @@
     pointer-events: auto;
 }
 
-/* 全屏模式下，非焦点列隐藏所有操作按钮 */
-.note-fullscreen-column:not(.note-fullscreen-column-active) .note-header-actions,
+/* 改为 */
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-header-actions {
+    display: flex !important;
+    gap: 4px;
+}
 .note-fullscreen-column:not(.note-fullscreen-column-active) .note-footer-actions {
+    display: flex !important;
+    gap: 4px;
+}
+
+/* 隐藏删除按钮 */
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-delete-btn,
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-footer-delete-btn {
     display: none !important;
 }
+
+/* 隐藏星标按钮 */
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-star-btn-inline {
+    display: none !important;
+}
+
+/* 确保折叠按钮可见 */
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-collapse-btn,
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-footer-collapse-btn {
+    display: inline-block !important;
+    opacity: 0.6;
+}
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-collapse-btn:hover,
+.note-fullscreen-column:not(.note-fullscreen-column-active) .note-footer-collapse-btn:hover {
+    opacity: 1;
+}
+
+/* ============================================
+   逐条渐显动画 - 移除容器整体隐藏
+   ============================================ */
+
+/* 笔记项初始隐藏 */
+.note-item {
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.25s ease-out, transform 0.25s ease-out;
+}
+
+.note-item.note-item-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.note-items.no-transition .note-item {
+    transition: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+}
+
+.note-item.note-item-editing {
+    opacity: 1 !important;
+    transform: translateY(0) !important;
+    transition: none !important;
+}
+
+/* 全屏列 - 强制显示笔记项（解决折叠隐藏问题） */
+
+.note-items.note-items-fullscreen .note-item {
+    display: block !important;
+    opacity: 1 !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+}
+/* 全屏列 - 展开折叠内容 */
+.note-items.note-items-fullscreen .note-text-collapsed {
+    -webkit-line-clamp: unset !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+.note-items.note-items-fullscreen .note-collapsed-indicator {
+    display: none !important;
+}
+
+.note-items.note-items-fullscreen .note-cover-overlay {
+    bottom: 0px!important;
+    min-height: 3.6em!important;
+    padding: 8px 10px!important;
+}
+
+.note-items.note-items-fullscreen .note-cover-text {
+    bottom: 1px!important;
+    font-size: 1.0em!important;
+    line-height: 1.3!important;
+    height: 3.4em!important;
+}
+
+/*.note-items.note-items-fullscreen .note-mov-wrapper {
+    height: 185px!important;
+}*/
+
