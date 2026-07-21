@@ -1,4 +1,4 @@
-exports.version = 3.3
+exports.version = 3.4
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"

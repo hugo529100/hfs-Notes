@@ -1630,6 +1630,7 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
         const [showSortButtons, setShowSortButtons] = useState(false);
         const [isFullscreen, setIsFullscreen] = useState(false);
         const [otherTabData, setOtherTabData] = useState({});
+        const [fullscreenLoadState, setFullscreenLoadState] = useState({});
         const [tabClickCount, setTabClickCount] = useState({});
         const [thumbFormat, setThumbFormat] = useState('jpg');
 const [visibleItems, setVisibleItems] = useState(new Set());
@@ -1830,43 +1831,53 @@ const revealTimerRef = useRef(null);
                     if (data.tab !== activeTabRef.current) return;
                     
                     if (e === 'newNote') {
-                        shouldAutoScrollRef.current = true;
-                        const noteData = { 
-                            ...data, 
-                            _tab: activeTabRef.current,
-                            s: data.m ? data.m.substring(0, 200) : '',
-                            hasMore: data.m ? data.m.length > 200 : false,
-                            m: data.m
-                        };
-                        setNotes(prev => {
-                            const exists = prev.some(n => n.ts === data.ts);
-                            if (exists) return prev;
-                            return [...prev, noteData];
-                        });
-                        loadTabs();
-                    } else if (e === 'updateNote') {
-                        setNotes(prev => prev.map(n => n.ts === data.ts ? { 
-                            ...n, 
-                            m: data.m, 
-                            s: data.m ? data.m.substring(0, 200) : '',
-                            hasMore: data.m ? data.m.length > 200 : false,
-                            collapsed: data.collapsed 
-                        } : n));
-                    } else if (e === 'toggleStar') {
-                        setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, starred: data.starred } : n));
-                    } else if (e === 'toggleCollapse') {
-                        setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, collapsed: data.collapsed } : n));
-                    } else if (e === 'deleteNote') {
-                        setNotes(prev => prev.filter(n => n.ts !== data.ts));
-                        loadTabs();
-                    } else if (e === 'tabCleared' && data.tab === activeTabRef.current) {
-                        fullContentFallbackRef.current = {};
-                        setNotes([]);
-                        setHasMore(false);
-                        setCurrentOffset(0);
-                        delete tabCacheRef.current[data.tab];
-                        loadTabs();
-                    }
+    shouldAutoScrollRef.current = true;
+    const noteData = { 
+        ...data, 
+        _tab: activeTabRef.current,
+        s: data.m ? data.m.substring(0, 200) : '',
+        hasMore: data.m ? data.m.length > 200 : false,
+        m: data.m
+    };
+    setNotes(prev => {
+        const exists = prev.some(n => n.ts === data.ts);
+        if (exists) return prev;
+        return [...prev, noteData];
+    });
+    loadTabs();
+    
+    // 全屏模式下新消息滚动到底部
+    if (isFullscreenRef.current && !isMobile) {
+        setTimeout(() => {
+            const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }, 100);
+    }
+} else if (e === 'updateNote') {
+    setNotes(prev => prev.map(n => n.ts === data.ts ? { 
+        ...n, 
+        m: data.m, 
+        s: data.m ? data.m.substring(0, 200) : '',
+        hasMore: data.m ? data.m.length > 200 : false,
+        collapsed: data.collapsed 
+    } : n));
+} else if (e === 'toggleStar') {
+    setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, starred: data.starred } : n));
+} else if (e === 'toggleCollapse') {
+    setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, collapsed: data.collapsed } : n));
+} else if (e === 'deleteNote') {
+    setNotes(prev => prev.filter(n => n.ts !== data.ts));
+    loadTabs();
+} else if (e === 'tabCleared' && data.tab === activeTabRef.current) {
+    fullContentFallbackRef.current = {};
+    setNotes([]);
+    setHasMore(false);
+    setCurrentOffset(0);
+    delete tabCacheRef.current[data.tab];
+    loadTabs();
+}
                 });
             } catch (e) {}
         }, []);
@@ -2248,23 +2259,31 @@ const revealTimerRef = useRef(null);
         }, [closing, isDesktopDevice]);
 
         const toggleFullscreen = useCallback(() => {
-            const el = document.documentElement;
-            
-            if (!isFullscreenRef.current) {
-                el.requestFullscreen?.()
-                    .then(() => {
-                        setIsFullscreen(true);
-                        setFullscreenStarFilter(false);
-                    })
-                    .catch(err => {
-                        HFS.toast("Enter fullscreen failed: " + err, 'error');
-                    });
-            } else {
-                document.exitFullscreen?.();
-                setIsFullscreen(false);
+    const el = document.documentElement;
+    
+    if (!isFullscreenRef.current) {
+        el.requestFullscreen?.()
+            .then(() => {
+                setIsFullscreen(true);
                 setFullscreenStarFilter(false);
-            }
-        }, []);
+                // ↓↓↓ 新增：进入全屏后滚动到底部
+                setTimeout(() => {
+                    const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
+                    if (container) {
+                        container.scrollTop = container.scrollHeight;
+                    }
+                }, 400);
+                // ↑↑↑ 新增结束
+            })
+            .catch(err => {
+                HFS.toast("Enter fullscreen failed: " + err, 'error');
+            });
+    } else {
+        document.exitFullscreen?.();
+        setIsFullscreen(false);
+        setFullscreenStarFilter(false);
+    }
+}, []);
 
         const sanitizeText = useCallback((text) => {
             if (!text) return '';
@@ -2419,100 +2438,199 @@ const revealTimerRef = useRef(null);
         }, []);
 
         const loadNotes = useCallback(async (tab, append = false) => {
-            if (!tab) return;
-            
-            if (loadNotesAbortControllerRef.current) {
-                loadNotesAbortControllerRef.current.abort();
-            }
-            
-            const controller = new AbortController();
-            loadNotesAbortControllerRef.current = controller;
-            
-            let offset = 0;
-            if (append) {
-                offset = currentOffsetRef.current;
-            }
-            
-            try {
-                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}&summary=1`, {
-                    signal: controller.signal
-                });
-                const data = await res.json();
-                
-                const rawNotes = data.notes || {};
-                const sortedKeys = Object.keys(rawNotes).sort();
-                const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
-                
-                const newThumbMap = data.thumbMap || {};
-                const newFileNames = data.fileNames || {};
-                const newThumbFormat = data.thumbFormat || 'jpg';
-                
-                if (append) {
-                    setNotes(prev => {
-                        const existingTs = new Set(prev.map(n => n.ts));
-                        const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
-                        const combined = [...newNotes, ...prev];
-                        tabCacheRef.current[tab] = {
-                            notes: combined,
-                            thumbMap: { ...thumbMap, ...newThumbMap },
-                            attNames: { ...attNames, ...newFileNames },
-                            hasMore: data.hasMore || false,
-                            offset: offset + notesWithTab.length,
-                            timestamp: Date.now(),
+    if (!tab) return;
+    
+    if (loadNotesAbortControllerRef.current) {
+        loadNotesAbortControllerRef.current.abort();
+    }
+    
+    const controller = new AbortController();
+    loadNotesAbortControllerRef.current = controller;
+    
+    let offset = 0;
+    if (append) {
+        offset = currentOffsetRef.current;
+    }
+    
+    const isFullscreenTab = isFullscreen && tab !== activeTab;
+    
+    try {
+        const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}&summary=1`, {
+            signal: controller.signal
+        });
+        const data = await res.json();
+        
+        const rawNotes = data.notes || {};
+        const sortedKeys = Object.keys(rawNotes).sort();
+        const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
+        
+        const newThumbMap = data.thumbMap || {};
+        const newFileNames = data.fileNames || {};
+        const newThumbFormat = data.thumbFormat || 'jpg';
+        
+        // ====== 计算是否有更多数据（移到最前面） ======
+        const returnedCount = sortedKeys.length;
+        let newHasMore = false;
+        if (data.hasMore !== undefined) {
+            newHasMore = data.hasMore;
+        } else {
+            newHasMore = returnedCount >= PAGE_SIZE;
+        }
+        if (returnedCount === 0) {
+            newHasMore = false;
+        }
+        // ====== 修复结束 ======
+        
+        // ↓↓↓ 修改：区分全屏列和当前列
+        if (append) {
+            if (isFullscreenTab) {
+                // 全屏其他列：更新 otherTabData
+                setOtherTabData(prev => {
+                    const existingTs = new Set((prev[tab]?.notes || []).map(n => n.ts));
+                    const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
+                    const newOffset = (prev[tab]?.offset || 0) + notesWithTab.length;
+                    return {
+                        ...prev,
+                        [tab]: {
+                            ...prev[tab],
+                            notes: [...newNotes, ...(prev[tab]?.notes || [])],
+                            offset: newOffset,
+                            hasMore: newHasMore,
+                            thumbMap: { ...prev[tab]?.thumbMap, ...newThumbMap },
+                            fileNames: { ...prev[tab]?.fileNames, ...newFileNames },
                             thumbFormat: newThumbFormat
-                        };
-                        return combined;
-                    });
-                    setThumbMap(prev => ({ ...prev, ...newThumbMap }));
-                    setAttNames(prev => ({ ...prev, ...newFileNames }));
-                } else {
-                    setNotes(notesWithTab);
-                    setThumbMap(newThumbMap);
-                    setAttNames(newFileNames);
+                        }
+                    };
+                });
+                setFullscreenLoadState(prev => ({
+                    ...prev,
+                    [tab]: {
+                        offset: (prev[tab]?.offset || 0) + notesWithTab.length,
+                        hasMore: newHasMore,
+                        loading: false
+                    }
+                }));
+            } else {
+                // 当前激活列：使用原有逻辑
+                setNotes(prev => {
+                    const existingTs = new Set(prev.map(n => n.ts));
+                    const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
+                    const combined = [...newNotes, ...prev];
                     tabCacheRef.current[tab] = {
-                        notes: notesWithTab,
-                        thumbMap: newThumbMap,
-                        attNames: newFileNames,
-                        hasMore: data.hasMore || false,
-                        offset: notesWithTab.length,
+                        notes: combined,
+                        thumbMap: { ...thumbMap, ...newThumbMap },
+                        attNames: { ...attNames, ...newFileNames },
+                        hasMore: newHasMore,
+                        offset: offset + notesWithTab.length,
                         timestamp: Date.now(),
                         thumbFormat: newThumbFormat
                     };
-                }
-                setThumbFormat(newThumbFormat);
-                const newHasMore = data.hasMore || false;
-                setHasMore(newHasMore);
-                setCurrentOffset(offset + notesWithTab.length);
-                return newHasMore;
-            } catch (e) {
-                if (e.name === 'AbortError') {}
-            } finally {
-                if (loadNotesAbortControllerRef.current === controller) {
-                    loadNotesAbortControllerRef.current = null;
-                }
+                    return combined;
+                });
+                setThumbMap(prev => ({ ...prev, ...newThumbMap }));
+                setAttNames(prev => ({ ...prev, ...newFileNames }));
             }
-        }, [thumbMap, attNames]);
-
-        const loadOtherTabNotes = useCallback(async (tab) => {
-            if (!tab) return;
-            try {
-                const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=0&limit=30&summary=1`);
-                const data = await res.json();
-                const rawNotes = data.notes || {};
-                const sortedKeys = Object.keys(rawNotes).sort();
-                const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
-                
+        } else {
+            // 首次加载
+            if (isFullscreenTab) {
                 setOtherTabData(prev => ({
                     ...prev,
                     [tab]: {
                         notes: notesWithTab,
-                        thumbMap: data.thumbMap || {},
-                        fileNames: data.fileNames || {},
-                        thumbFormat: data.thumbFormat || 'jpg'
+                        offset: notesWithTab.length,
+                        hasMore: newHasMore,
+                        thumbMap: newThumbMap,
+                        fileNames: newFileNames,
+                        thumbFormat: newThumbFormat
                     }
                 }));
-            } catch (e) {}
-        }, []);
+                setFullscreenLoadState(prev => ({
+                    ...prev,
+                    [tab]: {
+                        offset: notesWithTab.length,
+                        hasMore: newHasMore,
+                        loading: false
+                    }
+                }));
+            } else {
+                // 当前激活列首次加载
+                setNotes(notesWithTab);
+                setThumbMap(newThumbMap);
+                setAttNames(newFileNames);
+                tabCacheRef.current[tab] = {
+                    notes: notesWithTab,
+                    thumbMap: newThumbMap,
+                    attNames: newFileNames,
+                    hasMore: newHasMore,
+                    offset: notesWithTab.length,
+                    timestamp: Date.now(),
+                    thumbFormat: newThumbFormat
+                };
+            }
+        }
+        
+        setThumbFormat(newThumbFormat);
+        
+        // ↓↓↓ 只有当前列才更新主状态
+        if (!isFullscreenTab) {
+            setHasMore(newHasMore);
+            setCurrentOffset(offset + notesWithTab.length);
+        }
+        // ↑↑↑ 修改结束
+        
+        return newHasMore;
+    } catch (e) {
+        if (e.name === 'AbortError') {}
+    } finally {
+        if (loadNotesAbortControllerRef.current === controller) {
+            loadNotesAbortControllerRef.current = null;
+        }
+    }
+}, [thumbMap, attNames, isFullscreen, activeTab]);
+
+        const loadOtherTabNotes = useCallback(async (tab) => {
+    if (!tab) return;
+    try {
+        const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=0&limit=${PAGE_SIZE}&summary=1`);
+        const data = await res.json();
+        const rawNotes = data.notes || {};
+        const sortedKeys = Object.keys(rawNotes).sort();
+        const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
+        
+        // ====== 修复开始 ======
+        const returnedCount = notesWithTab.length;
+        let hasMoreData = false;
+        if (data.hasMore !== undefined) {
+            hasMoreData = data.hasMore;
+        } else {
+            hasMoreData = returnedCount >= PAGE_SIZE;
+        }
+        if (returnedCount === 0) {
+            hasMoreData = false;
+        }
+        // ====== 修复结束 ======
+        
+        setOtherTabData(prev => ({
+            ...prev,
+            [tab]: {
+                notes: notesWithTab,
+                offset: notesWithTab.length,
+                hasMore: hasMoreData,  // ← 使用修复后的值
+                thumbMap: data.thumbMap || {},
+                fileNames: data.fileNames || {},
+                thumbFormat: data.thumbFormat || 'jpg'
+            }
+        }));
+        setFullscreenLoadState(prev => ({
+            ...prev,
+            [tab]: {
+                offset: notesWithTab.length,
+                hasMore: hasMoreData,  // ← 使用修复后的值
+                loading: false
+            }
+        }));
+    } catch (e) {}
+}, []);
 
         const getFullscreenColumns = useCallback(() => {
             if (!isFullscreen || isMobile) return [];
@@ -2532,15 +2650,41 @@ const revealTimerRef = useRef(null);
             return getFullscreenColumns();
         }, [getFullscreenColumns]);
 
-        useEffect(() => {
-            if (isFullscreen && !isMobile) {
-                fullscreenColumns.forEach(tab => {
-                    if (tab !== activeTab) {
-                        loadOtherTabNotes(tab);
-                    }
-                });
+useEffect(() => {
+    if (isFullscreen && !isMobile) {
+        fullscreenColumns.forEach(tab => {
+            if (tab !== activeTab) {
+                loadOtherTabNotes(tab);
+                // ↓↓↓ 新增：初始化加载状态
+                setFullscreenLoadState(prev => ({
+    ...prev,
+    [tab]: {
+        offset: 0,
+        hasMore: false,  // ← 初始为 false，等数据加载后再更新
+        loading: false
+    }
+}));
+                // ↑↑↑ 新增结束
             }
-        }, [isFullscreen, fullscreenColumns, activeTab, isMobile, loadOtherTabNotes]);
+        });
+    }
+}, [isFullscreen, fullscreenColumns, activeTab, isMobile, loadOtherTabNotes]);
+
+// ↓↓↓ 新增：全屏模式焦点列自动滚动到底部
+useEffect(() => {
+    if (!isFullscreen || isMobile) return;
+    
+    // 延迟确保 DOM 更新
+    const timer = setTimeout(() => {
+        const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
+        if (container) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }, 50);
+    
+    return () => clearTimeout(timer);
+}, [notes, isFullscreen, isMobile]);
+// ↑↑↑ 新增结束
 
         const doLoadMore = useCallback(() => {
             if (isLoadingMoreRef.current || !hasMoreRef.current || searchTerm) return;
@@ -2571,6 +2715,107 @@ const revealTimerRef = useRef(null);
                 });
             });
         }, [searchTerm, loadNotes]);
+
+const loadMoreFullscreenTab = useCallback(async (tab) => {
+    if (!isFullscreenRef.current) return;
+    if (tab === activeTabRef.current) {
+        // 焦点列使用 doLoadMore
+        if (!isLoadingMoreRef.current && hasMoreRef.current && !searchTerm) {
+            doLoadMore();
+        }
+        return;
+    }
+    
+    const currentData = otherTabData[tab];
+    if (!currentData) return;
+    
+    // 防止重复加载
+    if (fullscreenLoadState[tab]?.loading) return;
+    if (fullscreenLoadState[tab]?.hasMore === false) return;
+    
+    // 检查是否还有更多数据
+    const hasMoreData = fullscreenLoadState[tab]?.hasMore !== undefined 
+        ? fullscreenLoadState[tab].hasMore 
+        : currentData.hasMore;
+    if (!hasMoreData) return;
+    
+    // 设置加载状态
+    setFullscreenLoadState(prev => ({
+        ...prev,
+        [tab]: { ...prev[tab], loading: true }
+    }));
+    
+    try {
+        // 使用 currentData.offset 获取更早的内容
+        const offset = currentData.offset || 0;
+        const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}&summary=1`);
+        const data = await res.json();
+        
+        const rawNotes = data.notes || {};
+        const sortedKeys = Object.keys(rawNotes).sort();
+        const returnedCount = sortedKeys.length;
+        
+        // 如果没有返回数据，标记为无更多
+        if (returnedCount === 0) {
+            setFullscreenLoadState(prev => ({
+                ...prev,
+                [tab]: { ...prev[tab], hasMore: false, loading: false }
+            }));
+            return;
+        }
+        
+        // 计算是否有更多数据
+        let newHasMore = false;
+        if (data.hasMore !== undefined) {
+            newHasMore = data.hasMore;
+        } else {
+            newHasMore = returnedCount >= PAGE_SIZE;
+        }
+        
+        const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
+        const newThumbMap = data.thumbMap || {};
+        const newFileNames = data.fileNames || {};
+        const newThumbFormat = data.thumbFormat || 'jpg';
+        
+        setOtherTabData(prev => {
+            const existingTs = new Set((prev[tab]?.notes || []).map(n => n.ts));
+            const newNotes = notesWithTab.filter(n => !existingTs.has(n.ts));
+            const newOffset = (prev[tab]?.offset || 0) + notesWithTab.length;
+            return {
+                ...prev,
+                [tab]: {
+                    ...prev[tab],
+                    notes: [...newNotes, ...(prev[tab]?.notes || [])],
+                    offset: newOffset,
+                    hasMore: newHasMore,
+                    thumbMap: { ...prev[tab]?.thumbMap, ...newThumbMap },
+                    fileNames: { ...prev[tab]?.fileNames, ...newFileNames },
+                    thumbFormat: newThumbFormat
+                }
+            };
+        });
+        
+        setFullscreenLoadState(prev => {
+            const newOffset = (prev[tab]?.offset || 0) + notesWithTab.length;
+            return {
+                ...prev,
+                [tab]: {
+                    offset: newOffset,
+                    hasMore: newHasMore,
+                    loading: false
+                }
+            };
+        });
+        
+        setThumbFormat(newThumbFormat);
+    } catch (e) {
+        setFullscreenLoadState(prev => ({
+            ...prev,
+            [tab]: { ...prev[tab], loading: false }
+        }));
+    }
+}, [otherTabData, fullscreenLoadState, activeTabRef, isFullscreenRef, searchTerm, doLoadMore]);
+
 
         const setupSentinelObserver = useCallback(() => {
             if (observerRef.current) {
@@ -2840,6 +3085,12 @@ useEffect(() => {
                 } else {
                     setActiveTab(tab);
                     setFullscreenStarFilter(false);
+                     setTimeout(() => {
+                const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
+            }, 150);
                 }
                 return;
             }
@@ -2893,54 +3144,93 @@ useEffect(() => {
         const dragOverlayContent = isGuest ? 'Please login to upload files' : 'Drop files to upload (multi-file supported)';
 
         return h('div', { 
-            className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
-            style: { fontSize: fontSize + 'px', overscrollBehavior: 'contain' },
-            ref: panelRef
+    className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
+    style: { fontSize: fontSize + 'px', overscrollBehavior: 'contain' },
+    ref: panelRef
+},
+    isDragging && h('div', { className: 'note-drag-overlay' },
+        h('div', { className: 'note-drag-overlay-content' }, dragOverlayContent)
+    ),
+    // ========== 修改：合并 header 和 tabs ==========
+    h('div', { 
+        className: 'note-panel-header', 
+        ref: headerRef,
+        style: isFullscreen ? { 
+            borderBottom: '1px solid var(--faint-contrast)',
+            padding: '4px 8px'
+        } : {}
+    },
+        h('div', { className: 'note-header-left', style: isFullscreen ? { flex: '0 0 auto' } : {} },
+            h('span', { 
+                className: 'note-panel-title',
+                onClick: toggleFullscreen,
+                style: { cursor: 'pointer' },
+                title: isFullscreen ? 'Click to exit fullscreen' : 'Click to enter fullscreen'
+            }, isGuest ? 'Notes (Guest)' : 'Notes'),
+            isFullscreen && h('span', { className: 'note-fullscreen-indicator' }, ' \u229E'),
+            starFilterActive && !isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '\u2605'),
+            fullscreenStarFilter && isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '\u2605'),
+            !isGuest && !isFullscreen && h('div', { className: 'note-font-btns-header' },
+                h('button', {
+                    className: 'note-font-btn-header',
+                    onClick: increaseFont,
+                    title: 'Increase font size'
+                }, 'A+'),
+                h('button', {
+                    className: 'note-font-btn-header',
+                    onClick: resetFont,
+                    title: 'Reset font size'
+                }, 'A')
+            ),
+            storageWarning && h('span', { className: 'note-warn-icon', title: 'Storage limit approaching' }, '\u26A0')
+        ),
+        
+        // 全屏模式下：tabs 显示在标题行右侧
+        isFullscreen && h('div', { 
+            className: 'note-tabs', 
+            style: { 
+                flex: '1',
+                display: 'flex',
+                alignItems: 'center',
+                overflowX: 'auto',
+                padding: '0 4px',
+                margin: '0 4px',
+                gap: '0'
+            }
         },
-            isDragging && h('div', { className: 'note-drag-overlay' },
-                h('div', { className: 'note-drag-overlay-content' }, dragOverlayContent)
-            ),
-            h('div', { className: 'note-panel-header', ref: headerRef },
-                h('div', { className: 'note-header-left' },
-                    h('span', { 
-                        className: 'note-panel-title',
-                        onClick: toggleFullscreen,
-                        style: { cursor: 'pointer' },
-                        title: isFullscreen ? 'Click to exit fullscreen' : 'Click to enter fullscreen'
-                    }, isGuest ? 'Notes (Guest)' : 'Notes'),
-                    isFullscreen && h('span', { className: 'note-fullscreen-indicator' }, ' \u229E'),
-                    starFilterActive && !isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '\u2605'),
-                    fullscreenStarFilter && isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '\u2605'),
-                    !isGuest && h('div', { className: 'note-font-btns-header' },
-                        h('button', {
-                            className: 'note-font-btn-header',
-                            onClick: increaseFont,
-                            title: 'Increase font size'
-                        }, 'A+'),
-                        h('button', {
-                            className: 'note-font-btn-header',
-                            onClick: resetFont,
-                            title: 'Reset font size'
-                        }, 'A')
-                    ),
-                    storageWarning && h('span', { className: 'note-warn-icon', title: 'Storage limit approaching' }, '\u26A0')
-                ),
-                h('div', { className: 'note-header-right' },
-                    !isFullscreen && h('button', {
-                        className: 'note-search-toggle',
-                        onClick: () => {
-                            setShowSearch(!showSearch);
-                            if (showSearch) setSearchTerm('');
-                            setTimeout(() => searchInputRef.current?.focus(), 50);
-                        },
-                        title: 'Search'
-                    }, showSearch ? '\u24E2' : '\u24E2'),
-                    searchTerm && h('span', { className: 'note-header-stats' },
-                        `${filteredNotes.length} notes / ${totalMatches} matches`
-                    ),
-                    h('button', { className: 'note-close-btn', onClick: handleClose }, '\u00D7')
+            tabs.map((tab, i) =>
+                h('span', { key: tab, className: 'note-tab-wrapper', style: { flexShrink: 0 } },
+                    i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
+                    h('button', {
+                        className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${fullscreenStarFilter && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+                        onClick: () => handleTabClick(tab),
+                        title: activeTab === tab ? (fullscreenStarFilter ? 'Click to exit star filter' : 'Click to filter starred') : 'Click to select tab',
+                        style: { 
+                            padding: '4px 8px', 
+                            fontSize: '0.85em',
+                            minWidth: 'auto'
+                        }
+                    }, getTabDisplayName(tab))
                 )
+            )
+        ),
+        
+        h('div', { className: 'note-header-right' },
+            !isFullscreen && h('button', {
+                className: 'note-search-toggle',
+                onClick: () => {
+                    setShowSearch(!showSearch);
+                    if (showSearch) setSearchTerm('');
+                    setTimeout(() => searchInputRef.current?.focus(), 50);
+                },
+                title: 'Search'
+            }, showSearch ? '\u24E2' : '\u24E2'),
+            !isFullscreen && searchTerm && h('span', { className: 'note-header-stats' },
+                `${filteredNotes.length} notes / ${totalMatches} matches`
             ),
+            h('button', { className: 'note-close-btn', onClick: handleClose }, '\u00D7')
+        )
+    ),
             
             showSearch && !isFullscreen && h('div', { className: 'note-search-bar' },
                 h('input', {
@@ -2968,141 +3258,163 @@ useEffect(() => {
                 )
             ),
             
-            isFullscreen && h('div', { className: 'note-tabs-container note-tabs-fullscreen' },
-                h('div', { className: 'note-tabs' },
-                    tabs.map((tab, i) =>
-                        h('span', { key: tab, className: 'note-tab-wrapper' },
-                            i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
-                            h('button', {
-                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${fullscreenStarFilter && activeTab === tab ? 'note-tab-star-mode' : ''}`,
-                                onClick: () => handleTabClick(tab),
-                                title: activeTab === tab ? (fullscreenStarFilter ? 'Click to exit star filter' : 'Click to filter starred') : 'Click to select tab'
-                            }, getTabDisplayName(tab))
-                        )
-                    )
-                )
-            ),
-            
-            !isFullscreen && h('div', { className: 'note-tabs-container' },
-                h('div', { className: 'note-tabs' },
-                    tabs.map((tab, i) =>
-                        h('span', { key: tab, className: 'note-tab-wrapper' },
-                            i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
-                            renamingTab === tab ? h('input', {
-                                ref: renameInputRef,
-                                className: 'note-tab-rename-input',
-                                value: renameValue,
-                                onChange: (e) => setRenameValue(e.target.value),
-                                onKeyDown: handleRenameKeyDown,
-                                onBlur: handleRenameSave,
-                                placeholder: tab
-                            }) : h('button', {
-                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
-                                onClick: () => handleTabClick(tab),
-                                title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
-                            }, getTabDisplayName(tab))
-                        )
-                    )
-                ),
-                showSortButtons && h('div', { className: 'note-tab-sort' },
-                    h('button', {
-                        className: 'note-sort-btn',
-                        onMouseDown: handleSortBtnMouseDown,
-                        onClick: () => moveTab(activeTab, 'left'),
-                        disabled: tabs.indexOf(activeTab) <= 0,
-                        title: 'Move left'
-                    }, '\u25C0'),
-                    h('button', {
-                        className: 'note-sort-btn',
-                        onMouseDown: handleSortBtnMouseDown,
-                        onClick: () => {
-                            moveTab(activeTab, 'right');
-                            setTimeout(() => {
-                                const currentTab = activeTabRef.current;
-                                handleRenameStart(currentTab);
-                            }, 50);
-                        },
-                        disabled: tabs.indexOf(activeTab) >= tabs.length - 1,
-                        title: 'Move right'
-                    }, '\u25B6')
-                )
-            ),
+            // 非全屏模式下的 tabs-container（保持不变）
+!isFullscreen && h('div', { className: 'note-tabs-container' },
+    h('div', { className: 'note-tabs' },
+        tabs.map((tab, i) =>
+            h('span', { key: tab, className: 'note-tab-wrapper' },
+                i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
+                renamingTab === tab ? h('input', {
+                    ref: renameInputRef,
+                    className: 'note-tab-rename-input',
+                    value: renameValue,
+                    onChange: (e) => setRenameValue(e.target.value),
+                    onKeyDown: handleRenameKeyDown,
+                    onBlur: handleRenameSave,
+                    placeholder: tab
+                }) : h('button', {
+                    className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+                    onClick: () => handleTabClick(tab),
+                    title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
+                }, getTabDisplayName(tab))
+            )
+        )
+    ),
+    showSortButtons && h('div', { className: 'note-tab-sort' },
+        h('button', {
+            className: 'note-sort-btn',
+            onMouseDown: handleSortBtnMouseDown,
+            onClick: () => moveTab(activeTab, 'left'),
+            disabled: tabs.indexOf(activeTab) <= 0,
+            title: 'Move left'
+        }, '\u25C0'),
+        h('button', {
+            className: 'note-sort-btn',
+            onMouseDown: handleSortBtnMouseDown,
+            onClick: () => {
+                moveTab(activeTab, 'right');
+                setTimeout(() => {
+                    const currentTab = activeTabRef.current;
+                    handleRenameStart(currentTab);
+                }, 50);
+            },
+            disabled: tabs.indexOf(activeTab) >= tabs.length - 1,
+            title: 'Move right'
+        }, '\u25B6')
+    )
+),
             
             isFullscreen && !isMobile ? 
-                h('div', { className: 'note-fullscreen-grid', ref: fullscreenGridRef },
-                    fullscreenColumns.map((tab, colIdx) => {
-                        const isActive = tab === activeTab;
-                        const tabData = isActive 
-                            ? { notes: fullscreenActiveNotes, thumbMap, fileNames: attNames, thumbFormat }
-                            : (otherTabData[tab] || { notes: [], thumbMap: {}, fileNames: {}, thumbFormat: 'jpg' });
-                        
-                        return h('div', { 
-                            className: `note-fullscreen-column ${isActive ? 'note-fullscreen-column-active' : ''}`,
-                            key: tab
-                        },
-                            isActive && fullscreenStarFilter && h('div', { className: 'note-star-filter-banner' }, '\u2605 Showing starred notes only'),
-                            h('div', { className: 'note-items note-items-fullscreen' },
-                                tabData.notes.length > 0
-                                    ? tabData.notes.map((note, i) => h(NoteItem, { 
-                                        key: note.ts || i, 
-                                        note, 
-                                        onDelete: handleDelete,
-                                        onEdit: handleEdit,
-                                        onToggleStar: handleToggleStar,
-                                        onToggleCollapse: handleToggleCollapse,
-                                        searchTerm: '',
-                                        activeMatches: null,
-                                        noteRef: null,
-                                        activeTab: tab,
-                                        tabName: note._tab || tab,
-                                        fontSize: fontSize - 1,
-                                        thumbMap: tabData.thumbMap,
-                                        attNames: tabData.fileNames,
-                                        isFullscreenColumn: !isActive,
-                                        thumbFormat: tabData.thumbFormat
-                                    }))
-                                    : h('div', { className: 'note-empty' }, isActive ? 'No notes' : 'Loading...')
-                            )
-                        );
-                    })
-                )
-            :
-h('div', { 
-    className: 'note-items',
-    ref: listRef, 
-    style: { overscrollBehavior: 'contain' } 
-},
-                    h('div', { 
-                        ref: sentinelRef,
-                        className: 'note-loading-indicator note-loading-clickable',
-                        key: 'load-more-sentinel',
-                        style: { display: (hasMore && !searchTerm) ? 'block' : 'none' },
-                        onClick: doLoadMore
-                    }, loadingMore ? 'Loading older notes...' : '\u25B2 Load older notes'),
+    h('div', { className: 'note-fullscreen-grid', ref: fullscreenGridRef },
+        fullscreenColumns.map((tab, colIdx) => {
+            const isActive = tab === activeTab;
+            const tabData = isActive 
+                ? { notes: fullscreenActiveNotes, thumbMap, fileNames: attNames, thumbFormat }
+                : (otherTabData[tab] || { notes: [], thumbMap: {}, fileNames: {}, thumbFormat: 'jpg' });
+            
+            const loadState = fullscreenLoadState[tab] || { offset: 0, hasMore: false, loading: false };
+            const hasMoreData = isActive ? hasMore : (tabData.hasMore !== undefined ? tabData.hasMore : loadState.hasMore);
+            const isLoading = isActive ? loadingMore : (loadState.loading || false);
+            
+            return h('div', { 
+                className: `note-fullscreen-column ${isActive ? 'note-fullscreen-column-active' : ''}`,
+                key: tab
+            },
+                isActive && fullscreenStarFilter && h('div', { className: 'note-star-filter-banner' }, '\u2605 Showing starred notes only'),
+                h('div', { 
+                    className: 'note-items note-items-fullscreen',
+                    style: { 
+                        overscrollBehavior: 'contain',
+                        display: 'flex',
+                        flexDirection: 'column'
+                    }
+                },
+                    hasMoreData && h('div', { 
+    className: `note-loading-indicator note-fullscreen-loading${isLoading ? ' is-loading' : ''}`,
+    onClick: isLoading ? undefined : () => {
+        if (isActive) {
+            if (!isLoadingMoreRef.current && hasMoreRef.current && !searchTerm) {
+                doLoadMore();
+            }
+        } else {
+            loadMoreFullscreenTab(tab);
+        }
+    }
+}, isLoading ? '\u25B2 Loading older notes...' : '\u25B2 Load older notes'),
                     
-                    starFilterActive && h('div', { className: 'note-star-filter-banner' }, '\u2605 Showing starred notes only'),
-                    filteredNotes.length > 0
-                        ? filteredNotes.map((note, i) => h(NoteItem, { 
+                    tabData.notes.length > 0
+                        ? tabData.notes.map((note, i) => h(NoteItem, { 
                             key: note.ts || i, 
                             note, 
                             onDelete: handleDelete,
                             onEdit: handleEdit,
                             onToggleStar: handleToggleStar,
                             onToggleCollapse: handleToggleCollapse,
-                            searchTerm,
-                            activeMatches: getActiveMatchesForNote(note),
-                            noteRef: activeMatchRef,
-                            activeTab,
-                            tabName: note._tab || activeTab,
-                            fontSize,
-                            thumbMap,
-                            attNames,
-                            isFullscreenColumn: false,
-                            thumbFormat,
-                            isVisible: visibleItems.has(note.ts)
+                            searchTerm: '',
+                            activeMatches: null,
+                            noteRef: null,
+                            activeTab: tab,
+                            tabName: note._tab || tab,
+                            fontSize: fontSize - 1,
+                            thumbMap: tabData.thumbMap,
+                            attNames: tabData.fileNames,
+                            isFullscreenColumn: !isActive,
+                            thumbFormat: tabData.thumbFormat
                         }))
-                        : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
-                ),
+                        : h('div', { className: 'note-empty' }, isActive ? 'No notes' : 'Loading...')
+                )
+            );
+        })
+    )
+            :
+h('div', { 
+    className: 'note-items',
+    ref: listRef, 
+    style: { 
+        overscrollBehavior: 'contain',
+        display: 'flex',
+        flexDirection: 'column'
+    } 
+},
+    // 加载指示器在顶部
+// 单列模式：哨兵元素保持可见用于 IntersectionObserver，但移除点击功能
+// 加载状态通过 loadingMore 显示
+h('div', { 
+    ref: sentinelRef,
+    className: `note-loading-indicator${loadingMore ? ' is-loading' : ''}`,
+    key: 'load-more-sentinel',
+    style: { 
+        display: (hasMore && !searchTerm) ? 'flex' : 'none',
+        cursor: 'default',
+        minHeight: '20px',
+        padding: '8px 10px'
+    },
+    // 移除 onClick，不再支持手动点击加载
+}, loadingMore ? '\u25B2 Loading older notes...' : '\u25B2 Scroll to load more'),
+    
+    starFilterActive && h('div', { className: 'note-star-filter-banner' }, '\u2605 Showing starred notes only'),
+    filteredNotes.length > 0
+        ? filteredNotes.map((note, i) => h(NoteItem, { 
+            key: note.ts || i, 
+            note, 
+            onDelete: handleDelete,
+            onEdit: handleEdit,
+            onToggleStar: handleToggleStar,
+            onToggleCollapse: handleToggleCollapse,
+            searchTerm,
+            activeMatches: getActiveMatchesForNote(note),
+            noteRef: activeMatchRef,
+            activeTab,
+            tabName: note._tab || activeTab,
+            fontSize,
+            thumbMap,
+            attNames,
+            isFullscreenColumn: false,
+            thumbFormat,
+            isVisible: visibleItems.has(note.ts)
+        }))
+        : h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
+),
             
             h('div', { className: `note-input-form ${isFullscreen ? 'note-input-fullscreen' : ''}` },
                 h('textarea', {

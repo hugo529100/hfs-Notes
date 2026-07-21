@@ -1305,9 +1305,14 @@
     color: var(--text);
     opacity: 0.5;
     padding: 10px;
-    font-size: 0.8em;
+    font-size: 0.85em;
     user-select: none;
     flex-shrink: 0;
+    transition: opacity 0.3s ease;
+}
+
+.note-loading-indicator.is-loading {
+    opacity: 0.8;
 }
 
 .note-loading-clickable {
@@ -1526,4 +1531,97 @@
 /*.note-items.note-items-fullscreen .note-mov-wrapper {
     height: 185px!important;
 }*/
+
+/* ============================================
+   全屏模式加载更多按钮 - 统一三角形图标样式
+   ============================================ */
+
+/* 全屏列加载更多按钮 - 与折叠按钮统一风格 */
+.note-fullscreen-loading {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12px !important;
+    color: var(--text) !important;
+    opacity: 0.7;
+    cursor: pointer;
+    padding: 8px 10px !important;
+    margin: 0 0 6px 0 !important;
+    border: 1px dashed var(--faint-contrast);
+    border-radius: 4px;
+    background: var(--bg);
+    transition: all 0.2s ease;
+    user-select: none;
+    flex-shrink: 0;
+    font-weight: normal;
+}
+
+.note-fullscreen-loading:hover {
+    opacity: 1;
+    background: var(--ghost-contrast);
+    border-color: var(--text);
+}
+
+.note-fullscreen-loading:active {
+    transform: scale(0.98);
+}
+
+/* 加载中状态 - 不可点击 */
+.note-fullscreen-loading[style*="cursor: default"],
+.note-fullscreen-loading.loading {
+    opacity: 0.6 !important;
+    cursor: default !important;
+    pointer-events: none;
+}
+
+/* 三角形箭头图标 - 与折叠按钮一致 */
+.note-fullscreen-loading .arrow-icon {
+    display: inline-block;
+    font-size: 0.85em;
+    line-height: 1;
+    transition: transform 0.2s;
+}
+
+.note-fullscreen-loading:hover .arrow-icon {
+    transform: translateY(-1px);
+}
+
+/* 单列模式的加载更多按钮 - 统一风格 */
+.note-loading-clickable {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--text) !important;
+    opacity: 0.6;
+    cursor: pointer;
+    padding: 8px 10px !important;
+    margin: 0 0 6px 0 !important;
+    border: 1px dashed var(--faint-contrast);
+    border-radius: 4px;
+    background: var(--bg);
+    transition: all 0.2s ease;
+    user-select: none;
+    flex-shrink: 0;
+    font-size: 12px !important;
+}
+
+.note-loading-clickable:hover {
+    opacity: 1;
+    background: var(--ghost-contrast);
+    border-color: var(--text);
+}
+
+.note-loading-clickable:active {
+    transform: scale(0.98);
+}
+
+/* 加载中状态 */
+.note-loading-clickable[style*="cursor: default"],
+.note-loading-clickable.loading {
+    opacity: 0.5 !important;
+    cursor: default !important;
+    pointer-events: none;
+}
 
