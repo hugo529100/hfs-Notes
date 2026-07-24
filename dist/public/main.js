@@ -1633,6 +1633,10 @@ h('div', { className: `note-text ${isCollapsed ? 'note-text-collapsed' : ''}` },
         const [fullscreenLoadState, setFullscreenLoadState] = useState({});
         const [tabClickCount, setTabClickCount] = useState({});
         const [thumbFormat, setThumbFormat] = useState('jpg');
+        const [searchResults, setSearchResults] = useState([]); // 搜索到的笔记列表
+const [isSearchingAll, setIsSearchingAll] = useState(false); // 是否正在全面搜索
+const [searchLoadedAll, setSearchLoadedAll] = useState(false); // 是否已加载全部数据
+const [searchProgress, setSearchProgress] = useState(0); // 搜索进度
 const [visibleItems, setVisibleItems] = useState(new Set());
 const revealTimerRef = useRef(null);
         const tabClickTimerRef = useRef({});
@@ -1663,7 +1667,7 @@ const revealTimerRef = useRef(null);
         const panelRef = useRef(null);
         const currentOffsetRef = useRef(0);
         const fullContentFallbackRef = useRef({});
-        
+
         useEffect(() => { mRef.current = m; }, [m]);
         useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
         useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
@@ -1717,10 +1721,22 @@ const revealTimerRef = useRef(null);
                 listRef.current.scrollTop = 0;
             }
             
-            setSearchTerm('');
-            setShowSearch(false);
-            setStarFilterActive(false);
-            setFullscreenStarFilter(false);
+setSearchTerm('');
+setShowSearch(false);
+setStarFilterActive(false);
+setFullscreenStarFilter(false);
+
+// ↓↓↓ 新增：重置搜索状态
+setSearchResults([]);
+setSearchLoadedAll(false);
+setSearchProgress(0);
+setIsSearchingAll(false);
+// 取消正在进行的搜索
+if (loadNotesAbortControllerRef.current) {
+    loadNotesAbortControllerRef.current.abort();
+    loadNotesAbortControllerRef.current = null;
+}
+// ↑↑↑ 新增结束
 
             Object.keys(tabClickTimerRef.current).forEach(key => {
                 if (key.startsWith('timeout_')) {
@@ -2437,7 +2453,7 @@ const revealTimerRef = useRef(null);
                 .catch(e => {});
         }, []);
 
-        const loadNotes = useCallback(async (tab, append = false) => {
+    const loadNotes = useCallback(async (tab, append = false) => {
     if (!tab) return;
     
     if (loadNotesAbortControllerRef.current) {
@@ -2587,6 +2603,79 @@ const revealTimerRef = useRef(null);
         }
     }
 }, [thumbMap, attNames, isFullscreen, activeTab]);
+
+// 全面搜索函数 - 持续加载直到全部加载完毕
+const searchAllNotes = useCallback(async (tab, searchTerm) => {
+    if (!tab || !searchTerm || isSearchingAll) return;
+    
+    // 重置搜索状态
+    setSearchResults([]);
+    setSearchLoadedAll(false);
+    setSearchProgress(0);
+    setIsSearchingAll(true);
+    
+    let allNotes = [];
+    let offset = 0;
+    let hasMore = true;
+    let totalLoaded = 0;
+    let matchedNotes = [];
+    
+    const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    
+    try {
+        while (hasMore && !loadNotesAbortControllerRef.current?.signal?.aborted) {
+            // 加载一批数据
+            const res = await fetch(`/~/api/notes/list?tab=${encodeURIComponent(tab)}&offset=${offset}&limit=${PAGE_SIZE}&summary=1`);
+            const data = await res.json();
+            
+            const rawNotes = data.notes || {};
+            const sortedKeys = Object.keys(rawNotes).sort();
+            const notesWithTab = sortedKeys.map(ts => ({ ...rawNotes[ts], ts, _tab: tab }));
+            
+            // 检查这批数据中是否有匹配的
+            for (const note of notesWithTab) {
+                const text = note.m || note.s || '';
+                if (text && regex.test(text)) {
+                    // 重新设置 lastIndex 以重置 regex 状态
+                    regex.lastIndex = 0;
+                    matchedNotes.push(note);
+                }
+            }
+            
+            // 更新进度显示
+            totalLoaded += notesWithTab.length;
+            setSearchProgress(totalLoaded);
+            
+            // 实时更新搜索结果（渐进式显示）
+            setSearchResults([...matchedNotes]);
+            
+            // 判断是否还有更多数据
+            const returnedCount = sortedKeys.length;
+            if (data.hasMore !== undefined) {
+                hasMore = data.hasMore;
+            } else {
+                hasMore = returnedCount >= PAGE_SIZE;
+            }
+            if (returnedCount === 0) {
+                hasMore = false;
+            }
+            
+            offset += notesWithTab.length;
+            
+            // 给 UI 一点喘息时间，避免卡顿
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+    } catch (e) {
+        if (e.name === 'AbortError') {
+            // 用户取消了搜索
+        }
+    } finally {
+        setIsSearchingAll(false);
+        setSearchLoadedAll(true);
+    }
+}, [isSearchingAll]);
+
 
         const loadOtherTabNotes = useCallback(async (tab) => {
     if (!tab) return;
@@ -2907,36 +2996,52 @@ const loadMoreFullscreenTab = useCallback(async (tab) => {
             });
         }, [notes]);
 
-        const displayNotes = useMemo(() => {
-            return starFilterActive ? notes.filter(n => n.starred) : notes;
-        }, [notes, starFilterActive]);
+        // 修改 displayNotes
+const displayNotes = useMemo(() => {
+    // 如果有搜索词且正在搜索或已有结果
+    if (searchTerm.trim()) {
+        let notesToShow = searchResults;
+        // 应用星级过滤
+        if (starFilterActive) {
+            notesToShow = notesToShow.filter(n => n.starred);
+        }
+        return notesToShow;
+    }
+    // 普通模式
+    return starFilterActive ? notes.filter(n => n.starred) : notes;
+}, [notes, starFilterActive, searchTerm, searchResults]);
 
         const fullscreenActiveNotes = useMemo(() => {
             return fullscreenStarFilter ? notes.filter(n => n.starred) : notes;
         }, [notes, fullscreenStarFilter]);
 
         const { filteredNotes, totalMatches, noteMatchMap } = useMemo(() => {
-            if (!searchTerm) return { filteredNotes: displayNotes, totalMatches: 0, noteMatchMap: new Map() };
-            
-            const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(escaped, 'gi');
-            const filtered = [];
-            const matchMap = new Map();
-            let total = 0;
-            
-            for (const note of displayNotes) {
-                const text = note.m || note.s || '';
-                if (!text) continue;
-                const matches = (text.match(regex) || []).length;
-                if (matches > 0) {
-                    filtered.push(note);
-                    matchMap.set(note, matches);
-                    total += matches;
-                }
-            }
-            
-            return { filteredNotes: filtered, totalMatches: total, noteMatchMap: matchMap };
-        }, [displayNotes, searchTerm]);
+    if (!searchTerm) return { filteredNotes: displayNotes, totalMatches: 0, noteMatchMap: new Map() };
+    
+    const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    const filtered = [];
+    const matchMap = new Map();
+    let total = 0;
+    
+    // 使用 searchResults 而不是 displayNotes
+    const notesToSearch = searchTerm.trim() ? searchResults : displayNotes;
+    
+    for (const note of notesToSearch) {
+        const text = note.m || note.s || '';
+        if (!text) continue;
+        // 重置 regex lastIndex
+        regex.lastIndex = 0;
+        const matches = (text.match(regex) || []).length;
+        if (matches > 0) {
+            filtered.push(note);
+            matchMap.set(note, matches);
+            total += matches;
+        }
+    }
+    
+    return { filteredNotes: filtered, totalMatches: total, noteMatchMap: matchMap };
+}, [displayNotes, searchTerm, searchResults]);
 
 // ========== 逐条显示逻辑 ==========
 useEffect(() => {
@@ -3232,31 +3337,86 @@ useEffect(() => {
         )
     ),
             
-            showSearch && !isFullscreen && h('div', { className: 'note-search-bar' },
-                h('input', {
-                    ref: searchInputRef,
-                    value: searchTerm,
-                    onChange: (e) => setSearchTerm(e.target.value),
-                    placeholder: 'Search notes...',
-                    className: 'note-search-input'
-                }),
-                searchTerm && h('span', { className: 'note-search-count' },
-                    `${filteredNotes.length} notes, ${totalMatches} matches`
-                ),
-                searchTerm && totalMatches > 0 && h('span', { className: 'note-search-nav' },
-                    h('button', {
-                        className: 'note-search-nav-btn',
-                        onClick: goToPrevMatch,
-                        title: 'Previous'
-                    }, '\u25B2'),
-                    h('span', { className: 'note-search-nav-num' }, `${currentMatch + 1}/${totalMatches}`),
-                    h('button', {
-                        className: 'note-search-nav-btn',
-                        onClick: goToNextMatch,
-                        title: 'Next'
-                    }, '\u25BC')
-                )
-            ),
+            // 修改搜索栏部分
+showSearch && !isFullscreen && h('div', { className: 'note-search-bar' },
+    h('input', {
+        ref: searchInputRef,
+        value: searchTerm,
+        onChange: async (e) => {
+            const term = e.target.value;
+            setSearchTerm(term);
+            
+            if (loadNotesAbortControllerRef.current) {
+                loadNotesAbortControllerRef.current.abort();
+                loadNotesAbortControllerRef.current = null;
+            }
+            
+if (term.trim()) {
+        // 清空之前的搜索结果，开始新搜索
+        setSearchResults([]);
+        setSearchLoadedAll(false);
+        setSearchProgress(0);
+        
+        // 启动全面搜索
+        searchAllNotes(activeTabRef.current, term.trim());
+    } else {
+        // 清空搜索，恢复普通显示
+        setSearchResults([]);
+        setSearchLoadedAll(false);
+        setSearchProgress(0);
+        setIsSearchingAll(false);
+    }
+        },
+        placeholder: 'Search notes... (searches all history)',
+        className: 'note-search-input'
+    }),
+    // 搜索状态显示
+    searchTerm.trim() && h('div', { className: 'note-search-status' },
+        isSearchingAll && h('span', { className: 'note-search-progress' },
+            `\u231B Searching... scanned ${searchProgress} notes`
+        ),
+        !isSearchingAll && searchLoadedAll && h('span', { className: 'note-search-result-count' },
+            `Found ${searchResults.length} matches in ${searchProgress} notes`
+        ),
+        !isSearchingAll && !searchLoadedAll && searchResults.length > 0 && h('span', { className: 'note-search-result-count' },
+            `Found ${searchResults.length} matches`
+        )
+    ),
+    // 如果搜索完成且没有结果
+    !isSearchingAll && searchLoadedAll && searchResults.length === 0 && searchTerm.trim() && 
+        h('span', { className: 'note-search-no-result' }, 'No matches found'),
+    // 取消搜索按钮（当正在搜索时）
+    isSearchingAll && h('button', {
+        className: 'note-search-cancel-btn',
+        onClick: () => {
+            if (loadNotesAbortControllerRef.current) {
+                loadNotesAbortControllerRef.current.abort();
+                loadNotesAbortControllerRef.current = null;
+            }
+            setIsSearchingAll(false);
+            setSearchLoadedAll(true);
+            if (searchResults.length === 0) {
+                // 如果还没有结果，清空搜索
+                setSearchTerm('');
+            }
+        },
+        title: 'Cancel search'
+    }, '\u2715'),
+    // 原有的匹配导航（保持不变）
+    searchTerm.trim() && searchResults.length > 0 && h('span', { className: 'note-search-nav' },
+        h('button', {
+            className: 'note-search-nav-btn',
+            onClick: goToPrevMatch,
+            title: 'Previous'
+        }, '\u25B2'),
+        h('span', { className: 'note-search-nav-num' }, `${currentMatch + 1}/${totalMatches}`),
+        h('button', {
+            className: 'note-search-nav-btn',
+            onClick: goToNextMatch,
+            title: 'Next'
+        }, '\u25BC')
+    )
+),
             
             // 非全屏模式下的 tabs-container（保持不变）
 !isFullscreen && h('div', { className: 'note-tabs-container' },

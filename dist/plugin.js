@@ -1,4 +1,4 @@
-exports.version = 3.4
+exports.version = 3.5
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -240,7 +240,7 @@ const MAX_FILE_SIZE = 200 * 1024 * 1024 // 附件最大尺寸
 const TEMP_FILE_TTL = 60 * 1000     // 临时文件保留时间(ms)
 const THUMB_QUALITY = 70            // 缩略图质量(1-100)
 const PAGE_SIZE = 10                // 分页大小(条数)
-const SUMMARY_LENGTH = 200          // 摘要截取长度(字符)
+const SUMMARY_LENGTH = 250          // 摘要截取长度(字符)
 
     let backupTimer = null
     let midnightCleanupTimer = null
