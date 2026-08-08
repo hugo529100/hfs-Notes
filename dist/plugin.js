@@ -1,4 +1,4 @@
-exports.version = 3.6
+exports.version = 3.8
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -263,37 +263,38 @@ const SUMMARY_LENGTH = 250          // 摘要截取长度(字符)
         await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ order: tabs, names: {} }, null, 2))
     }
 
-    async function syncTabsMapWithConfig() {
-        const tabsMap = await loadTabsMap()
-        const configTabs = getTabs()
-        let needsSave = false
-        
-        const newOrder = tabsMap.order.filter(t => configTabs.includes(t))
-        if (newOrder.length !== tabsMap.order.length) {
-            tabsMap.order = newOrder
+async function syncTabsMapWithConfig() {
+    const tabsMap = await loadTabsMap()
+    const configTabs = getTabs()
+    let needsSave = false
+
+    const configSet = new Set(configTabs)
+    const validExistingOrder = (tabsMap.order || []).filter(t => configSet.has(t))
+    
+    const existingSet = new Set(validExistingOrder)
+    const newTabs = configTabs.filter(t => !existingSet.has(t))
+    
+    const newOrder = [...validExistingOrder, ...newTabs]
+    
+    if (newOrder.length !== (tabsMap.order || []).length || 
+        newOrder.some((t, i) => t !== (tabsMap.order || [])[i])) {
+        tabsMap.order = newOrder
+        needsSave = true
+    }
+    
+    for (const tabName of Object.keys(tabsMap.names)) {
+        if (!configTabs.includes(tabName)) {
+            delete tabsMap.names[tabName]
             needsSave = true
         }
-        
-        for (const tab of configTabs) {
-            if (!tabsMap.order.includes(tab)) {
-                tabsMap.order.push(tab)
-                needsSave = true
-            }
-        }
-        
-        for (const tabName of Object.keys(tabsMap.names)) {
-            if (!configTabs.includes(tabName)) {
-                delete tabsMap.names[tabName]
-                needsSave = true
-            }
-        }
-        
-        if (needsSave) {
-            await saveTabsMap(tabsMap)
-        }
-        
-        return tabsMap
     }
+    
+    if (needsSave) {
+        await saveTabsMap(tabsMap)
+    }
+    
+    return tabsMap
+}
 
     function sanitizeForDb(text) {
         if (!text || typeof text !== 'string') return ''
