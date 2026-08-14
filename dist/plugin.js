@@ -1,4 +1,4 @@
-exports.version = 3.8
+exports.version = 3.9
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
@@ -10,6 +10,11 @@ exports.config = {
         label: 'Tab List',
         fields: {
             name: { label: 'Tab Name' },
+            category: {
+                label: 'Category',
+                helperText: 'Group tabs by category. Leave empty for uncategorized.',
+                defaultValue: ''
+            },
             publicNote: {
                 type: 'boolean',
                 label: 'Allow notes visible on public page',
@@ -17,7 +22,7 @@ exports.config = {
                 helperText: 'When enabled, unauthenticated users (Guest) can see and send text-only notes in this tab.'
             }
         },
-        defaultValue: [{ name: 'General', publicNote: false }],
+        defaultValue: [{ name: 'General', category: '', publicNote: false }],
         helperText: 'Add or remove tabs. Each tab has its own independent note storage.',
         frontend: true
     },
@@ -233,14 +238,14 @@ exports.init = async api => {
     const BACKUP_DIR = path.join(storage, 'backup')
     const TABS_MAP_FILE = path.join(TABS_DIR, '_tabs_map.json')
 
-const SPAM_DELAY = 1000              // 防抖延迟(ms)
-const MAX_STORAGE_WARNING = 400     // 存储警告阈值(条)
-const MAX_IMG_SIZE = 80 * 1024 * 1024   // 图片最大尺寸
-const MAX_FILE_SIZE = 200 * 1024 * 1024 // 附件最大尺寸
-const TEMP_FILE_TTL = 60 * 1000     // 临时文件保留时间(ms)
-const THUMB_QUALITY = 70            // 缩略图质量(1-100)
-const PAGE_SIZE = 10                // 分页大小(条数)
-const SUMMARY_LENGTH = 250          // 摘要截取长度(字符)
+const SPAM_DELAY = 1000
+const MAX_STORAGE_WARNING = 400
+const MAX_IMG_SIZE = 80 * 1024 * 1024
+const MAX_FILE_SIZE = 200 * 1024 * 1024
+const TEMP_FILE_TTL = 60 * 1000
+const THUMB_QUALITY = 70
+const PAGE_SIZE = 10
+const SUMMARY_LENGTH = 250
 
     let backupTimer = null
     let midnightCleanupTimer = null
@@ -260,19 +265,25 @@ const SUMMARY_LENGTH = 250          // 摘要截取长度(字符)
         await fs.stat(TABS_MAP_FILE)
     } catch {
         const tabs = getTabs()
-        await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ order: tabs, names: {} }, null, 2))
+        await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ 
+            order: tabs, 
+            names: {}, 
+            categories: {},
+            categoryOrder: [],
+            categoryNames: {}
+        }, null, 2))
     }
 
 async function syncTabsMapWithConfig() {
     const tabsMap = await loadTabsMap()
-    const configTabs = getTabs()
+    const configTabs = getTabsWithCategory()
     let needsSave = false
 
-    const configSet = new Set(configTabs)
+    const configSet = new Set(configTabs.map(t => t.name))
     const validExistingOrder = (tabsMap.order || []).filter(t => configSet.has(t))
     
     const existingSet = new Set(validExistingOrder)
-    const newTabs = configTabs.filter(t => !existingSet.has(t))
+    const newTabs = configTabs.filter(t => !existingSet.has(t.name)).map(t => t.name)
     
     const newOrder = [...validExistingOrder, ...newTabs]
     
@@ -282,8 +293,40 @@ async function syncTabsMapWithConfig() {
         needsSave = true
     }
     
-    for (const tabName of Object.keys(tabsMap.names)) {
-        if (!configTabs.includes(tabName)) {
+    for (const tab of Object.keys(tabsMap.categories || {})) {
+        if (!configSet.has(tab)) {
+            delete tabsMap.categories[tab]
+            needsSave = true
+        }
+    }
+    
+    for (const tabConfig of configTabs) {
+        if (tabConfig.category !== undefined && tabConfig.category !== null) {
+            const currentCat = tabsMap.categories?.[tabConfig.name]
+            if (currentCat !== tabConfig.category) {
+                if (!tabsMap.categories) tabsMap.categories = {}
+                tabsMap.categories[tabConfig.name] = tabConfig.category || ''
+                needsSave = true
+            }
+        }
+    }
+    
+    const existingCategories = new Set(Object.values(tabsMap.categories || {}).filter(Boolean))
+    const validCategoryOrder = (tabsMap.categoryOrder || []).filter(cat => existingCategories.has(cat))
+    if (validCategoryOrder.length !== (tabsMap.categoryOrder || []).length) {
+        tabsMap.categoryOrder = validCategoryOrder
+        needsSave = true
+    }
+    
+    for (const cat of Object.keys(tabsMap.categoryNames || {})) {
+        if (!existingCategories.has(cat)) {
+            delete tabsMap.categoryNames[cat]
+            needsSave = true
+        }
+    }
+    
+    for (const tabName of Object.keys(tabsMap.names || {})) {
+        if (!configSet.has(tabName)) {
             delete tabsMap.names[tabName]
             needsSave = true
         }
@@ -314,7 +357,7 @@ async function syncTabsMapWithConfig() {
     
     function getTabPublicConfig(tab) {
         if (!tab) return false
-        const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
+        const list = api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }]
         const found = list.find(t => t.name === tab)
         return found ? (found.publicNote === true) : false
     }
@@ -331,12 +374,17 @@ async function syncTabsMapWithConfig() {
     }
 
     function getTabs() {
-        const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
+        const list = api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }]
         return list.map(t => t.name).filter(Boolean)
     }
 
+    function getTabsWithCategory() {
+        const list = api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }]
+        return list.filter(t => t.name && t.name.trim())
+    }
+
     function getPublicTabs() {
-        const list = api.getConfig('tabList') || [{ name: 'General', publicNote: false }]
+        const list = api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }]
         return list.filter(t => t.publicNote === true).map(t => t.name).filter(Boolean)
     }
 
@@ -368,11 +416,8 @@ function generateFileId(originalName) {
         String(now.getMinutes()).padStart(2, '0') +
         String(now.getSeconds()).padStart(2, '0')
     const rand = crypto.randomBytes(3).toString('hex')
-    // 保留原始扩展名，但添加时间前缀
     const ext = path.extname(originalName) || ''
     const baseName = path.basename(originalName, ext)
-    // 文件名格式：年月日时分秒_随机数_原始文件名
-    // 确保原始文件名中的特殊字符被保留
     return `${dateStr}_${rand}_${baseName}${ext}`
 }
 
@@ -391,9 +436,9 @@ function generateFileId(originalName) {
     }
 
     function getTabImgDir(tab) {
-    const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
-    return path.join(IMG_BASE_DIR, safeTab)  // storage/img/News
-}
+        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+        return path.join(IMG_BASE_DIR, safeTab)
+    }
 
     function getTabMovDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
@@ -406,9 +451,9 @@ function generateFileId(originalName) {
     }
 
     function getTabThumbDir(tab) {
-    const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
-    return path.join(THUMB_BASE_DIR, safeTab)  // storage/thumb/News
-}
+        const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
+        return path.join(THUMB_BASE_DIR, safeTab)
+    }
 
     function getNameMapPath(tab, type) {
         const dir = type === 'mov' ? getTabMovDir(tab) : getTabAttDir(tab)
@@ -425,11 +470,14 @@ function generateFileId(originalName) {
             const parsed = JSON.parse(data)
             return {
                 order: parsed.order || getTabs(),
-                names: parsed.names || {}
+                names: parsed.names || {},
+                categories: parsed.categories || {},
+                categoryOrder: parsed.categoryOrder || [],
+                categoryNames: parsed.categoryNames || {}
             }
         } catch {
             const tabs = getTabs()
-            return { order: tabs, names: {} }
+            return { order: tabs, names: {}, categories: {}, categoryOrder: [], categoryNames: {} }
         }
     }
 
@@ -549,29 +597,22 @@ function generateFileId(originalName) {
     }
 
 async function getFileName(tab, type, fileId) {
-    // 首先从目标目录的映射中查找
     const mapPath = getNameMapPath(tab, type)
     try {
         const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
         if (nameMap[fileId]) return nameMap[fileId]
     } catch {}
     
-    // 如果找不到，尝试从临时目录映射中查找
     try {
         const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
         const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
         if (tempNameMap[fileId]) return tempNameMap[fileId]
     } catch {}
     
-    // 如果都找不到，从文件名中提取原始名称（去除时间前缀）
-    // 格式：年月日时分秒_随机数_原始文件名
     const parts = fileId.split('_')
     if (parts.length >= 3) {
-        // 移除前两个部分（时间和随机数）
         const originalParts = parts.slice(2)
-        // 重新组合，保持原始文件名中的下划线
         const originalName = originalParts.join('_')
-        // 如果有扩展名，保留
         return originalName
     }
     return fileId
@@ -588,13 +629,13 @@ async function getFileName(tab, type, fileId) {
     }
 
     async function ensureDir(dir) {
-    try {
-        await fs.mkdir(dir, { recursive: true })
-    } catch (e) {
-        if (e.code !== 'EEXIST') throw e
+        try {
+            await fs.mkdir(dir, { recursive: true })
+        } catch (e) {
+            if (e.code !== 'EEXIST') throw e
+        }
+        return dir
     }
-    return dir
-}
 
     function extractImageIds(content) {
         if (!content) return []
@@ -949,7 +990,6 @@ async function promoteFileFromTemp(fileId, targetDir) {
         await fs.stat(tempPath)
         await fs.copyFile(tempPath, finalPath)
         
-        // 复制临时文件名映射到目标目录
         const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
         try {
             const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
@@ -991,22 +1031,22 @@ async function promoteImageFromTemp(imageId, tab) {
 }
 
     async function promoteAllAttachments(content, tab) {
-    const { img, mov, att } = extractAllAttachmentIds(content)
-    
-    const promotePromises = []
-    
-    for (const imgId of img) {
-        promotePromises.push(
-            promoteImageFromTemp(imgId, tab).then(promoted => {
-                if (promoted) {
-                    setTimeout(() => {
-                        fs.unlink(getTempPath(imgId)).catch(() => {})
-                    }, TEMP_FILE_TTL)
-                }
-                return promoted
-            })
-        )
-    }
+        const { img, mov, att } = extractAllAttachmentIds(content)
+        
+        const promotePromises = []
+        
+        for (const imgId of img) {
+            promotePromises.push(
+                promoteImageFromTemp(imgId, tab).then(promoted => {
+                    if (promoted) {
+                        setTimeout(() => {
+                            fs.unlink(getTempPath(imgId)).catch(() => {})
+                        }, TEMP_FILE_TTL)
+                    }
+                    return promoted
+                })
+            )
+        }
         
         for (const movId of mov) {
             const movDir = getTabMovDir(tab)
@@ -1322,7 +1362,12 @@ async function promoteImageFromTemp(imageId, tab) {
         }, 500)
         if (api.getConfig('tabList')) {
             syncTabsMapWithConfig().then(tabsMap => {
-                api.notifyClient('notes', 'tabsReordered', { tabs: tabsMap.order })
+                api.notifyClient('notes', 'tabsReordered', { 
+                    tabs: tabsMap.order, 
+                    categories: tabsMap.categories,
+                    categoryOrder: tabsMap.categoryOrder,
+                    categoryNames: tabsMap.categoryNames
+                })
             }).catch(() => {})
         }
     })
@@ -1344,6 +1389,9 @@ async function promoteImageFromTemp(imageId, tab) {
                 counts: result, 
                 warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
                 tabNames: tabsMap.names,
+                categories: tabsMap.categories || {},
+                categoryOrder: tabsMap.categoryOrder || [],
+                categoryNames: tabsMap.categoryNames || {},
                 isGuest: true
             }
             ctx.status = 200
@@ -1361,6 +1409,9 @@ async function promoteImageFromTemp(imageId, tab) {
             counts: result, 
             warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
             tabNames: tabsMap.names,
+            categories: tabsMap.categories || {},
+            categoryOrder: tabsMap.categoryOrder || [],
+            categoryNames: tabsMap.categoryNames || {},
             isGuest: false
         }
         ctx.status = 200
@@ -1390,6 +1441,90 @@ async function promoteImageFromTemp(imageId, tab) {
         const notifyName = trimmed || tab
         api.notifyClient('notes', 'tabRenamed', { tab, newName: notifyName })
         ctx.body = { ok: true, tab, newName: notifyName }
+        ctx.status = 200
+    }
+
+    async function updateCategory(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+        
+        let body = ctx.state.params || ctx.request?.body || {}
+        const { tab, category } = body
+        
+        if (!tab) { ctx.status = 400; return }
+        
+        const tabsMap = await loadTabsMap()
+        if (!tabsMap.categories) tabsMap.categories = {}
+        
+        if (category && category.trim()) {
+            tabsMap.categories[tab] = category.trim()
+            const catName = category.trim()
+            const allCategories = new Set(Object.values(tabsMap.categories).filter(Boolean))
+            if (!tabsMap.categoryOrder) tabsMap.categoryOrder = []
+            if (!tabsMap.categoryOrder.includes(catName) && allCategories.has(catName)) {
+                tabsMap.categoryOrder.push(catName)
+            }
+        } else {
+            delete tabsMap.categories[tab]
+        }
+        
+        await saveTabsMap(tabsMap)
+        api.notifyClient('notes', 'categoryUpdated', { tab, category: category && category.trim() ? category.trim() : '' })
+        ctx.body = { ok: true }
+        ctx.status = 200
+    }
+
+    async function updateCategoryName(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+        
+        let body = ctx.state.params || ctx.request?.body || {}
+        const { oldCategory, newCategory } = body
+        
+        if (!oldCategory || !newCategory) {
+            ctx.status = 400; return
+        }
+        
+        const tabsMap = await loadTabsMap()
+        if (!tabsMap.categoryNames) tabsMap.categoryNames = {}
+        
+        const trimmed = newCategory.trim()
+        if (trimmed) {
+            tabsMap.categoryNames[oldCategory] = trimmed
+        } else {
+            delete tabsMap.categoryNames[oldCategory]
+        }
+        
+        if (tabsMap.categoryOrder) {
+            const idx = tabsMap.categoryOrder.indexOf(oldCategory)
+            if (idx > -1) {
+                tabsMap.categoryOrder[idx] = trimmed
+            }
+        }
+        
+        await saveTabsMap(tabsMap)
+        api.notifyClient('notes', 'categoryNameUpdated', { oldCategory, newCategory: trimmed || oldCategory })
+        ctx.body = { ok: true }
+        ctx.status = 200
+    }
+
+    async function updateCategoryOrder(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+        
+        let body = ctx.state.params || ctx.request?.body || {}
+        const { order } = body
+        
+        if (!order || !Array.isArray(order)) {
+            ctx.status = 400; return
+        }
+        
+        const tabsMap = await loadTabsMap()
+        tabsMap.categoryOrder = order
+        await saveTabsMap(tabsMap)
+        
+        api.notifyClient('notes', 'categoryOrderUpdated', { order })
+        ctx.body = { ok: true }
         ctx.status = 200
     }
 
@@ -1462,17 +1597,17 @@ async function promoteImageFromTemp(imageId, tab) {
             Object.assign(fileNames, attNames)
         } catch {}
         
-ctx.body = { 
-    notes: pageNotes, 
-    count: totalCount, 
-    warning: totalCount >= MAX_STORAGE_WARNING,
-    thumbMap,
-    fileNames,
-    hasMore: hasMoreData,
-    offset: offset,
-    limit: limit,
-    thumbFormat: api.getConfig('thumbnail_format') || 'jpg'
-}
+        ctx.body = { 
+            notes: pageNotes, 
+            count: totalCount, 
+            warning: totalCount >= MAX_STORAGE_WARNING,
+            thumbMap,
+            fileNames,
+            hasMore: hasMoreData,
+            offset: offset,
+            limit: limit,
+            thumbFormat: api.getConfig('thumbnail_format') || 'jpg'
+        }
         ctx.status = 200
     }
 
@@ -1702,7 +1837,12 @@ ctx.body = {
         const tabsMap = await loadTabsMap()
         tabsMap.order = newOrder
         await saveTabsMap(tabsMap)
-        api.notifyClient('notes', 'tabsReordered', { tabs: newOrder })
+        api.notifyClient('notes', 'tabsReordered', { 
+            tabs: newOrder, 
+            categories: tabsMap.categories,
+            categoryOrder: tabsMap.categoryOrder,
+            categoryNames: tabsMap.categoryNames
+        })
         ctx.body = { ok: true }
         ctx.status = 200
     }
@@ -1914,7 +2054,7 @@ ctx.body = {
         
         ctx.body = {
             config: {
-                tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }],
+                tabList: api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }],
                 spamDelay: SPAM_DELAY, storageWarning: MAX_STORAGE_WARNING,
                 backupInterval: api.getConfig('backupInterval'),
                 backupRetentionDays: api.getConfig('backupRetentionDays'),
@@ -1950,7 +2090,7 @@ ctx.body = {
         const tabs = getTabs()
         const exportData = {
             exportTime: new Date().toISOString(), exportedBy: username,
-            config: { tabList: api.getConfig('tabList') || [{ name: 'General', publicNote: false }] }, 
+            config: { tabList: api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }] }, 
             storageType: 'file-based',
             data: {}
         }
@@ -2139,75 +2279,72 @@ ctx.body = {
     }
     
     async function uploadFileToTemp(ctx) {
-    const username = getCurrentUsername(ctx)
-    if (!username || !isAllowed(username)) { ctx.status = 403; return }
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
 
-    try {
-        const body = ctx.request?.body || ctx.state?.params || {}
-        if (!body.data) { ctx.status = 400; ctx.body = { error: 'No file data' }; return }
-
-        const matches = body.data.match(/^data:(.+);base64,(.+)$/)
-        if (!matches) { ctx.status = 400; ctx.body = { error: 'Invalid base64 format' }; return }
-
-        const mimeType = matches[1]
-        const fileBuffer = Buffer.from(matches[2], 'base64')
-        const originalName = body.name || 'file'
-        const displayName = body.displayName || originalName
-
-        if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
-        
-        const isImage = mimeType.startsWith('image/')
-        const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
-        if (fileBuffer.length > maxSize) {
-            ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
-        }
-
-        await ensureDir(TEMP_DIR)
-        // 生成带时间前缀的文件名
-        const fileId = generateFileId(originalName)
-        const filePath = path.join(TEMP_DIR, fileId)
-        
-        await fs.writeFile(filePath, fileBuffer)
-        
-        // 保存原始文件名映射（用于下载时还原）
-        // 使用全局映射或 temp 目录下的映射文件
-        const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
-        let tempNameMap = {}
         try {
-            tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
-        } catch {}
-        tempNameMap[fileId] = originalName
-        await fs.writeFile(tempMapPath, JSON.stringify(tempNameMap))
-        
-        const isVideo = mimeType.startsWith('video/')
-        const isAudio = mimeType.startsWith('audio/')
-        
-        let hasThumb = false
-        if (isImage) {
-            const thumbDir = await ensureDir(THUMB_BASE_DIR)
-            const thumbSubDir = path.join(thumbDir, '_temp')
-            await ensureDir(thumbSubDir)
-            const thumbPath = path.join(thumbSubDir, fileId)
-            hasThumb = await generateThumbnail(fileBuffer, thumbPath)
+            const body = ctx.request?.body || ctx.state?.params || {}
+            if (!body.data) { ctx.status = 400; ctx.body = { error: 'No file data' }; return }
+
+            const matches = body.data.match(/^data:(.+);base64,(.+)$/)
+            if (!matches) { ctx.status = 400; ctx.body = { error: 'Invalid base64 format' }; return }
+
+            const mimeType = matches[1]
+            const fileBuffer = Buffer.from(matches[2], 'base64')
+            const originalName = body.name || 'file'
+            const displayName = body.displayName || originalName
+
+            if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
+            
+            const isImage = mimeType.startsWith('image/')
+            const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
+            if (fileBuffer.length > maxSize) {
+                ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
+            }
+
+            await ensureDir(TEMP_DIR)
+            const fileId = generateFileId(originalName)
+            const filePath = path.join(TEMP_DIR, fileId)
+            
+            await fs.writeFile(filePath, fileBuffer)
+            
+            const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+            let tempNameMap = {}
+            try {
+                tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+            } catch {}
+            tempNameMap[fileId] = originalName
+            await fs.writeFile(tempMapPath, JSON.stringify(tempNameMap))
+            
+            const isVideo = mimeType.startsWith('video/')
+            const isAudio = mimeType.startsWith('audio/')
+            
+            let hasThumb = false
+            if (isImage) {
+                const thumbDir = await ensureDir(THUMB_BASE_DIR)
+                const thumbSubDir = path.join(thumbDir, '_temp')
+                await ensureDir(thumbSubDir)
+                const thumbPath = path.join(thumbSubDir, fileId)
+                hasThumb = await generateThumbnail(fileBuffer, thumbPath)
+            }
+            
+            ctx.body = { 
+                ok: true, 
+                fileId,
+                isImage,
+                isVideo,
+                isAudio,
+                isOther: !isImage && !isVideo && !isAudio,
+                url: `/~/notes/temp/${fileId}`,
+                name: displayName,
+                hasThumb,
+                originalName: originalName
+            }
+            ctx.status = 200
+        } catch (e) {
+            ctx.status = 500; ctx.body = { error: 'Upload failed: ' + e.message }
         }
-        
-        ctx.body = { 
-            ok: true, 
-            fileId,
-            isImage,
-            isVideo,
-            isAudio,
-            isOther: !isImage && !isVideo && !isAudio,
-            url: `/~/notes/temp/${fileId}`,
-            name: displayName,
-            hasThumb,
-            originalName: originalName  // 返回原始名称给前端
-        }
-        ctx.status = 200
-    } catch (e) {
-        ctx.status = 500; ctx.body = { error: 'Upload failed: ' + e.message }
     }
-}
     
     async function serveTempFile(ctx) {
         const params = ctx.params || {}
@@ -2375,73 +2512,67 @@ ctx.body = {
     }
 
     async function serveAtt(ctx) {
-    const params = ctx.params || {}
-    const tab = params.tab
-    let fileId = params.fileId
-    
-    if (!tab || !fileId) { ctx.status = 404; return }
-    
-    // 对 fileId 进行 URL 解码
-    try {
-        fileId = decodeURIComponent(fileId)
-    } catch (e) {
-        // 如果解码失败，使用原始值
-    }
-    
-    // 尝试多个路径
-    let filePath = path.join(getTabAttDir(tab), fileId)
-    try {
-        await fs.stat(filePath)
-    } catch {
-        // 尝试 URL 编码的版本
-        const encodedFileId = encodeURIComponent(fileId)
-        filePath = path.join(getTabAttDir(tab), encodedFileId)
+        const params = ctx.params || {}
+        const tab = params.tab
+        let fileId = params.fileId
+        
+        if (!tab || !fileId) { ctx.status = 404; return }
+        
+        try {
+            fileId = decodeURIComponent(fileId)
+        } catch (e) {}
+        
+        let filePath = path.join(getTabAttDir(tab), fileId)
         try {
             await fs.stat(filePath)
         } catch {
-            // 尝试临时目录
-            filePath = path.join(TEMP_DIR, fileId)
+            const encodedFileId = encodeURIComponent(fileId)
+            filePath = path.join(getTabAttDir(tab), encodedFileId)
             try {
                 await fs.stat(filePath)
             } catch {
-                filePath = path.join(TEMP_DIR, encodedFileId)
+                filePath = path.join(TEMP_DIR, fileId)
                 try {
                     await fs.stat(filePath)
                 } catch {
-                    ctx.status = 404
-                    ctx.body = { error: 'File not found' }
-                    return
+                    filePath = path.join(TEMP_DIR, encodedFileId)
+                    try {
+                        await fs.stat(filePath)
+                    } catch {
+                        ctx.status = 404
+                        ctx.body = { error: 'File not found' }
+                        return
+                    }
                 }
             }
         }
+        
+        try {
+            const originalName = await getFileName(tab, 'att', fileId).catch(() => fileId)
+            
+            ctx.type = 'application/octet-stream'
+            ctx.set('Cache-Control', 'no-cache')
+            
+            const encodedName = encodeURIComponent(originalName)
+                .replace(/['()]/g, escape)
+                .replace(/\*/g, '%2A');
+            
+            ctx.set('Content-Disposition', 
+                `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
+            );
+            
+            ctx.set('Access-Control-Allow-Origin', '*')
+            ctx.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            ctx.set('Access-Control-Allow-Headers', 'Content-Type')
+            ctx.set('X-Content-Type-Options', 'nosniff')
+            
+            ctx.body = await fs.readFile(filePath)
+            ctx.status = 200
+        } catch (err) {
+            console.error('Serve attachment error:', err)
+            ctx.status = 404
+        }
     }
-    
-    try {
-        const originalName = await getFileName(tab, 'att', fileId).catch(() => fileId)
-        
-        ctx.type = 'application/octet-stream'
-        ctx.set('Cache-Control', 'no-cache')
-        
-        const encodedName = encodeURIComponent(originalName)
-            .replace(/['()]/g, escape)
-            .replace(/\*/g, '%2A');
-        
-        ctx.set('Content-Disposition', 
-            `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
-        );
-        
-        ctx.set('Access-Control-Allow-Origin', '*')
-        ctx.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        ctx.set('Access-Control-Allow-Headers', 'Content-Type')
-        ctx.set('X-Content-Type-Options', 'nosniff')
-        
-        ctx.body = await fs.readFile(filePath)
-        ctx.status = 200
-    } catch (err) {
-        console.error('Serve attachment error:', err)
-        ctx.status = 404
-    }
-}
     
     return {
         async middleware(ctx) {
@@ -2508,6 +2639,9 @@ ctx.body = {
             if (p === `${API_BASE}delete` && method === 'POST') { await deleteNote(ctx); return }
             if (p === `${API_BASE}reorder-tabs` && method === 'POST') { await reorderTabs(ctx); return }
             if (p === `${API_BASE}rename-tab` && method === 'POST') { await renameTab(ctx); return }
+            if (p === `${API_BASE}update-category` && method === 'POST') { await updateCategory(ctx); return }
+            if (p === `${API_BASE}update-category-name` && method === 'POST') { await updateCategoryName(ctx); return }
+            if (p === `${API_BASE}update-category-order` && method === 'POST') { await updateCategoryOrder(ctx); return }
             if (p === `${API_BASE}upload` && method === 'POST') { await uploadFileToTemp(ctx); return }
             
             if (p === `${ADMIN_API}overview` && method === 'GET') { await adminOverview(ctx); return }

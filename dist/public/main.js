@@ -5,6 +5,8 @@
 
     const CACHE_ACTIVE_TAB = 'notes_activeTab';
     const CACHE_INPUT_TEXT = 'notes_inputText';
+    const CACHE_ACTIVE_CATEGORY = 'notes_activeCategory';
+    const CACHE_CATEGORY_ORDER = 'notes_categoryOrder';
 
     let isGuest = false;
     let publicTabsList = [];
@@ -486,72 +488,6 @@
             }
         };
 
-        const handleImageToggle = (e, imageId) => {
-            e.stopPropagation();
-            const img = e.currentTarget;
-            const currentMode = imageViewMode[imageId] || 'thumbnail';
-            let newMode;
-            let toastMessage;
-            if (currentMode === 'thumbnail') {
-                newMode = 'full';
-                toastMessage = 'Switched to original image';
-            } else {
-                newMode = 'thumbnail';
-                toastMessage = 'Switched to thumbnail';
-            }
-            setImageViewMode(prev => ({
-                ...prev,
-                [imageId]: newMode
-            }));
-            HFS.toast(toastMessage, 'info');
-            const fullSrc = img.dataset.fullSrc;
-            const thumbSrc = img.dataset.thumbSrc;
-            if (newMode === 'full') {
-                img.src = fullSrc;
-                img.dataset.isThumb = 'false';
-                img.title = 'Click to switch to thumbnail';
-            } else {
-                img.src = thumbSrc;
-                img.dataset.isThumb = 'true';
-                img.title = 'Click to view original image';
-            }
-        };
-
-        const handleAttachmentDownload = useCallback(async (fileId, displayName, e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (currentGuest) {
-                HFS.toast('Please login to download files', 'info');
-                return;
-            }
-            try {
-                const url = `/~/notes/att/${encodeURIComponent(effectiveTab)}/${fileId}`;
-                HFS.toast('Downloading...', 'info');
-                const response = await fetch(url, {
-                    credentials: 'include',
-                    headers: {
-                        'Accept': 'application/octet-stream'
-                    }
-                });
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                const blob = await response.blob();
-                const downloadUrl = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = displayName;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 10000);
-                HFS.toast(`Downloaded: ${displayName}`, 'success');
-            } catch (err) {
-                console.error('Download error:', err);
-                HFS.toast(`Download failed: ${err.message}`, 'error');
-            }
-        }, [effectiveTab, currentGuest]);
-
         const renderContentWithHighlight = (content, isEditMode) => {
             if (!content) return '';
 
@@ -620,7 +556,6 @@
             }
 
             return parts.map((part, i) => {
-                // ========== 图片渲染 - 默认缩略图 ==========
                 if (part.type === 'image') {
                     const imgBase = isEditMode ? `/~/notes/temp/` : `/~/notes/img/${effectiveTab}/`;
                     const thumbBase = `/~/notes/thumb/${effectiveTab}/`;
@@ -685,7 +620,6 @@
                     });
                 }
 
-                // ========== 媒体渲染（音频/视频）- 默认显示封面 ==========
                 if (part.type === 'media') {
                     const movUrl = `/~/notes/mov/${effectiveTab}/${part.fileId}`;
                     const ext = part.fileId.split('.').pop()?.toLowerCase();
@@ -831,7 +765,6 @@
                     );
                 }
 
-                // ========== 附件渲染 ==========
                 if (part.type === 'attachment') {
                     let displayName = attNames[part.fileId] || part.name || part.fileId;
                     if (!attNames[part.fileId] && !part.name) {
@@ -869,7 +802,6 @@
                     );
                 }
 
-                // ========== 文本渲染 ==========
                 const textParts = part.content.split(linkRegex);
                 return textParts.map((textPart, j) => {
                     const key = `text-${i}-${j}`;
@@ -1512,6 +1444,11 @@
                 return localStorage.getItem(CACHE_ACTIVE_TAB) || '';
             } catch { return ''; }
         });
+        const [activeCategory, setActiveCategory] = useState(() => {
+            try {
+                return localStorage.getItem(CACHE_ACTIVE_CATEGORY) || '';
+            } catch { return ''; }
+        });
         const [notes, setNotes] = useState([]);
         const [tabCounts, setTabCounts] = useState({});
         const [isMobile, setIsMobile] = useState(false);
@@ -1526,9 +1463,19 @@
             } catch { return 14; }
         });
         const [tabNames, setTabNames] = useState({});
+        const [categories, setCategories] = useState({});
+        const [categoryNames, setCategoryNames] = useState({});
+        const [categoryOrder, setCategoryOrder] = useState(() => {
+            try {
+                return JSON.parse(localStorage.getItem(CACHE_CATEGORY_ORDER)) || [];
+            } catch { return []; }
+        });
         const [renamingTab, setRenamingTab] = useState(null);
         const [renameValue, setRenameValue] = useState('');
+        const [renamingCategory, setRenamingCategory] = useState(null);
+        const [renameCategoryValue, setRenameCategoryValue] = useState('');
         const renameInputRef = useRef(null);
+        const categoryRenameInputRef = useRef(null);
         const [starFilterActive, setStarFilterActive] = useState(false);
         const [fullscreenStarFilter, setFullscreenStarFilter] = useState(false);
         const [isDragging, setIsDragging] = useState(false);
@@ -1538,6 +1485,7 @@
         const [loadingMore, setLoadingMore] = useState(false);
         const [currentOffset, setCurrentOffset] = useState(0);
         const [showSortButtons, setShowSortButtons] = useState(false);
+        const [showCategorySort, setShowCategorySort] = useState(false);
         const [isFullscreen, setIsFullscreen] = useState(false);
         const [otherTabData, setOtherTabData] = useState({});
         const [fullscreenLoadState, setFullscreenLoadState] = useState({});
@@ -1578,6 +1526,43 @@
         const currentOffsetRef = useRef(0);
         const fullContentFallbackRef = useRef({});
 
+        // 获取分类列表
+        const categoryList = useMemo(() => {
+            const cats = new Set();
+            cats.add(''); // 空字符串代表"全部"
+            for (const tab of tabs) {
+                const cat = categories[tab] || '';
+                cats.add(cat);
+            }
+            const allCats = Array.from(cats);
+            // 按保存的顺序排序
+            if (categoryOrder.length > 0) {
+                const ordered = categoryOrder.filter(c => allCats.includes(c));
+                const unordered = allCats.filter(c => !ordered.includes(c) && c !== '');
+                return ['', ...ordered, ...unordered];
+            }
+            const sorted = allCats.sort();
+            const emptyIndex = sorted.indexOf('');
+            if (emptyIndex > 0) {
+                sorted.splice(emptyIndex, 1);
+                sorted.unshift('');
+            }
+            return sorted;
+        }, [tabs, categories, categoryOrder]);
+
+        // 获取当前分类下的Tabs
+        const filteredTabs = useMemo(() => {
+            if (!activeCategory) return tabs;
+            if (activeCategory === '') return tabs;
+            return tabs.filter(tab => (categories[tab] || '') === activeCategory);
+        }, [tabs, categories, activeCategory]);
+
+        // 获取分类显示名称
+        const getCategoryDisplayName = useCallback((cat) => {
+            if (!cat) return 'All';
+            return categoryNames[cat] || cat;
+        }, [categoryNames]);
+
         // 移动端检测
         useEffect(() => {
             const handleResize = () => setIsMobile(window.innerWidth <= 768);
@@ -1593,6 +1578,19 @@
         useEffect(() => { currentOffsetRef.current = currentOffset; }, [currentOffset]);
         useEffect(() => { isFullscreenRef.current = isFullscreen; }, [isFullscreen]);
         useEffect(() => { globalActiveTab = activeTab; }, [activeTab]);
+
+        // 当分类变化时，自动选择第一个Tab
+        useEffect(() => {
+            if (filteredTabs.length > 0 && !filteredTabs.includes(activeTab)) {
+                setActiveTab(filteredTabs[0]);
+                try {
+                    localStorage.setItem(CACHE_ACTIVE_TAB, filteredTabs[0]);
+                } catch {}
+            }
+            if (filteredTabs.length === 0) {
+                setActiveTab('');
+            }
+        }, [filteredTabs, activeTab]);
 
         useEffect(() => {
             try {
@@ -1722,6 +1720,18 @@
                     if (e === 'tabsReordered') {
                         if (data.tabs && Array.isArray(data.tabs)) {
                             setTabs(data.tabs);
+                            if (data.categories) {
+                                setCategories(data.categories);
+                            }
+                            if (data.categoryOrder) {
+                                setCategoryOrder(data.categoryOrder);
+                                try {
+                                    localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(data.categoryOrder));
+                                } catch {}
+                            }
+                            if (data.categoryNames) {
+                                setCategoryNames(data.categoryNames);
+                            }
                             if (!data.tabs.includes(activeTabRef.current)) {
                                 setActiveTab(data.tabs[0] || '');
                             }
@@ -1739,6 +1749,42 @@
                             }
                             return updated;
                         });
+                        return;
+                    }
+
+                    if (e === 'categoryUpdated') {
+                        if (data.tab && data.category !== undefined) {
+                            setCategories(prev => {
+                                const updated = { ...prev };
+                                if (data.category) {
+                                    updated[data.tab] = data.category;
+                                } else {
+                                    delete updated[data.tab];
+                                }
+                                return updated;
+                            });
+                        }
+                        return;
+                    }
+
+                    if (e === 'categoryNameUpdated') {
+                        setCategoryNames(prev => {
+                            const updated = { ...prev };
+                            if (data.newCategory && data.newCategory !== data.oldCategory) {
+                                updated[data.oldCategory] = data.newCategory;
+                            } else {
+                                delete updated[data.oldCategory];
+                            }
+                            return updated;
+                        });
+                        return;
+                    }
+
+                    if (e === 'categoryOrderUpdated') {
+                        setCategoryOrder(data.order);
+                        try {
+                            localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(data.order));
+                        } catch {}
                         return;
                     }
 
@@ -1806,6 +1852,13 @@
                 renameInputRef.current.select();
             }
         }, [renamingTab]);
+
+        useEffect(() => {
+            if (renamingCategory && categoryRenameInputRef.current) {
+                categoryRenameInputRef.current.focus();
+                categoryRenameInputRef.current.select();
+            }
+        }, [renamingCategory]);
 
         useEffect(() => {
             localStorage.setItem('notes_fontSize', fontSize);
@@ -2060,20 +2113,23 @@
                     headerRef.current.style.zIndex = '10';
                     headerRef.current.style.background = 'var(--bg)';
 
-                    const tabsContainer = headerRef.current.nextElementSibling;
-                    if (tabsContainer && tabsContainer.classList.contains('note-search-bar')) {
-                        const nextTabs = tabsContainer.nextElementSibling;
+                    const searchBar = headerRef.current.nextElementSibling;
+                    if (searchBar && searchBar.classList.contains('note-search-bar')) {
+                        const nextTabs = searchBar.nextElementSibling;
                         if (nextTabs && nextTabs.classList.contains('note-tabs-container')) {
                             nextTabs.style.position = 'sticky';
-                            nextTabs.style.top = (offsetTop + headerRef.current.offsetHeight) + 'px';
+                            nextTabs.style.top = (offsetTop + headerRef.current.offsetHeight + searchBar.offsetHeight) + 'px';
                             nextTabs.style.zIndex = '10';
                             nextTabs.style.background = 'var(--bg)';
                         }
-                    } else if (tabsContainer && tabsContainer.classList.contains('note-tabs-container')) {
-                        tabsContainer.style.position = 'sticky';
-                        tabsContainer.style.top = (offsetTop + headerRef.current.offsetHeight) + 'px';
-                        tabsContainer.style.zIndex = '10';
-                        tabsContainer.style.background = 'var(--bg)';
+                    } else {
+                        const tabsContainer = searchBar?.nextElementSibling || headerRef.current.nextElementSibling;
+                        if (tabsContainer && tabsContainer.classList.contains('note-tabs-container')) {
+                            tabsContainer.style.position = 'sticky';
+                            tabsContainer.style.top = (offsetTop + headerRef.current.offsetHeight) + 'px';
+                            tabsContainer.style.zIndex = '10';
+                            tabsContainer.style.background = 'var(--bg)';
+                        }
                     }
                 } else {
                     if (headerRef.current) {
@@ -2082,8 +2138,8 @@
                         headerRef.current.style.zIndex = '';
                         headerRef.current.style.background = '';
                     }
-                    const tabsContainers = document.querySelectorAll('.note-tabs-container');
-                    tabsContainers.forEach(el => {
+                    const containers = document.querySelectorAll('.note-tabs-container, .note-search-bar');
+                    containers.forEach(el => {
                         el.style.position = '';
                         el.style.top = '';
                         el.style.zIndex = '';
@@ -2110,32 +2166,31 @@
         }, [tabNames]);
 
         const handleClose = () => {
-    // 恢复 body 滚动
-    document.body.style.overflow = '';
-    document.body.style.touchAction = '';
-    document.body.style.overscrollBehavior = '';
-    
-    if (observerRef.current) {
-        observerRef.current.disconnect();
-        observerRef.current = null;
-    }
-    if (loadNotesAbortControllerRef.current) {
-        loadNotesAbortControllerRef.current.abort();
-        loadNotesAbortControllerRef.current = null;
-    }
-    if (esRef.current) {
-        esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
-        esRef.current = null;
-    }
-    globalEditingNoteTs = null;
-    globalEditingTab = null;
-    globalEditTextareaRef = null;
-    globalEditValue = '';
-    globalSetEditValue = null;
-    globalActiveTab = '';
-    setClosing(true);
-    setTimeout(onClose, 300);
-};
+            document.body.style.overflow = '';
+            document.body.style.touchAction = '';
+            document.body.style.overscrollBehavior = '';
+            
+            if (observerRef.current) {
+                observerRef.current.disconnect();
+                observerRef.current = null;
+            }
+            if (loadNotesAbortControllerRef.current) {
+                loadNotesAbortControllerRef.current.abort();
+                loadNotesAbortControllerRef.current = null;
+            }
+            if (esRef.current) {
+                esRef.current.then?.(v => v?.close?.()).catch?.(() => {});
+                esRef.current = null;
+            }
+            globalEditingNoteTs = null;
+            globalEditingTab = null;
+            globalEditTextareaRef = null;
+            globalEditValue = '';
+            globalSetEditValue = null;
+            globalActiveTab = '';
+            setClosing(true);
+            setTimeout(onClose, 300);
+        };
 
         const isDesktopDevice = useCallback(() => {
             return window.innerWidth > 768 && !('ontouchstart' in window);
@@ -2170,36 +2225,35 @@
             };
         }, [closing, isDesktopDevice]);
 
-const toggleFullscreen = useCallback(() => {
-    // 手机浏览器禁用全屏模式
-    if (isMobile) {
-        HFS.toast('Fullscreen mode not available on mobile', 'info');
-        return;
-    }
+        const toggleFullscreen = useCallback(() => {
+            if (isMobile) {
+                HFS.toast('Fullscreen mode not available on mobile', 'info');
+                return;
+            }
 
-    const el = document.documentElement;
+            const el = document.documentElement;
 
-    if (!isFullscreenRef.current) {
-        el.requestFullscreen?.()
-            .then(() => {
-                setIsFullscreen(true);
+            if (!isFullscreenRef.current) {
+                el.requestFullscreen?.()
+                    .then(() => {
+                        setIsFullscreen(true);
+                        setFullscreenStarFilter(false);
+                        setTimeout(() => {
+                            const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
+                            if (container) {
+                                container.scrollTop = container.scrollHeight;
+                            }
+                        }, 400);
+                    })
+                    .catch(err => {
+                        HFS.toast("Enter fullscreen failed: " + err, 'error');
+                    });
+            } else {
+                document.exitFullscreen?.();
+                setIsFullscreen(false);
                 setFullscreenStarFilter(false);
-                setTimeout(() => {
-                    const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
-                    if (container) {
-                        container.scrollTop = container.scrollHeight;
-                    }
-                }, 400);
-            })
-            .catch(err => {
-                HFS.toast("Enter fullscreen failed: " + err, 'error');
-            });
-    } else {
-        document.exitFullscreen?.();
-        setIsFullscreen(false);
-        setFullscreenStarFilter(false);
-    }
-}, [isMobile]);
+            }
+        }, [isMobile]);
 
         const sanitizeText = useCallback((text) => {
             if (!text) return '';
@@ -2328,6 +2382,156 @@ const toggleFullscreen = useCallback(() => {
             e.preventDefault();
         };
 
+        // ========== 分类操作函数 ==========
+        // 分类单击 - 切换分类筛选
+        const handleCategoryClick = (cat) => {
+            if (cat === '') {
+                if (activeCategory !== '') {
+                    setActiveCategory('');
+                    try {
+                        localStorage.setItem(CACHE_ACTIVE_CATEGORY, '');
+                    } catch {}
+                    if (tabs.length > 0) {
+                        setActiveTab(tabs[0]);
+                    }
+                }
+                return;
+            }
+            
+            const newCategory = cat === activeCategory ? '' : cat;
+            setActiveCategory(newCategory);
+            try {
+                localStorage.setItem(CACHE_ACTIVE_CATEGORY, newCategory);
+            } catch {}
+            
+            const tabsInCategory = tabs.filter(tab => (categories[tab] || '') === newCategory);
+            if (tabsInCategory.length > 0) {
+                setActiveTab(tabsInCategory[0]);
+            } else if (tabs.length > 0) {
+                setActiveTab(tabs[0]);
+            }
+        };
+
+        // 分类双击处理
+        const handleCategoryDoubleClick = (cat) => {
+            if (isGuest) return;
+            if (cat === '') {
+                setShowCategorySort(prev => !prev);
+                if (showCategorySort) {
+                    const order = categoryList.filter(c => c !== '');
+                    fetch('/~/api/notes/update-category-order', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ order })
+                    }).catch(() => {});
+                    HFS.toast('Category sort order saved', 'success');
+                } else {
+                    HFS.toast('Double-click ◀ ▶ buttons to reorder categories', 'info');
+                }
+                return;
+            }
+            handleCategoryRenameStart(cat);
+        };
+
+        const handleCategoryRenameStart = (cat) => {
+            if (isGuest || !cat) return;
+            setRenamingCategory(cat);
+            setRenameCategoryValue(categoryNames[cat] || cat);
+            setTimeout(() => categoryRenameInputRef.current?.focus(), 50);
+        };
+
+        const handleCategoryRenameSave = async () => {
+            if (!renamingCategory) return;
+            const newName = renameCategoryValue.trim();
+            
+            if (newName === '') {
+                setCategoryNames(prev => {
+                    const updated = { ...prev };
+                    delete updated[renamingCategory];
+                    return updated;
+                });
+                try {
+                    await fetch('/~/api/notes/update-category-name', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ oldCategory: renamingCategory, newCategory: renamingCategory })
+                    });
+                    HFS.toast(`Category name reset to "${renamingCategory}"`, 'info');
+                } catch (e) {}
+                setRenamingCategory(null);
+                setRenameCategoryValue('');
+                return;
+            }
+            
+            if (newName !== (categoryNames[renamingCategory] || renamingCategory)) {
+                try {
+                    const res = await fetch('/~/api/notes/update-category-name', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ oldCategory: renamingCategory, newCategory: newName })
+                    });
+                    if (res.ok) {
+                        setCategoryNames(prev => {
+                            const updated = { ...prev };
+                            updated[renamingCategory] = newName;
+                            return updated;
+                        });
+                        HFS.toast(`Category renamed to "${newName}"`, 'success');
+                    } else {
+                        HFS.toast('Failed to rename category', 'error');
+                    }
+                } catch (e) {
+                    HFS.toast('Failed to rename category', 'error');
+                }
+            }
+            setRenamingCategory(null);
+            setRenameCategoryValue('');
+        };
+
+        const handleCategoryRenameCancel = () => {
+            setRenamingCategory(null);
+            setRenameCategoryValue('');
+        };
+
+        const handleCategoryRenameKeyDown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleCategoryRenameSave();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setRenamingCategory(null);
+                setRenameCategoryValue('');
+            }
+        };
+
+        // 分类排序
+        const moveCategory = async (cat, direction) => {
+            if (isGuest || !cat) return;
+            const idx = categoryList.indexOf(cat);
+            if (idx === -1) return;
+            const target = direction === 'left' ? idx - 1 : idx + 1;
+            if (target < 1 || target >= categoryList.length) return;
+            
+            const newOrder = [...categoryList.filter(c => c !== '')];
+            const catIdx = newOrder.indexOf(cat);
+            if (catIdx > -1) {
+                newOrder.splice(catIdx, 1);
+                newOrder.splice(target - 1, 0, cat);
+            }
+            setCategoryOrder(newOrder);
+            try {
+                localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(newOrder));
+            } catch {}
+            
+            try {
+                await fetch('/~/api/notes/update-category-order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order: newOrder })
+                });
+            } catch (e) {}
+        };
+
         const loadTabs = useCallback(() => {
             fetch('/~/api/notes/tabs')
                 .then(r => r.json())
@@ -2337,21 +2541,50 @@ const toggleFullscreen = useCallback(() => {
                     setTabCounts(data.counts || {});
                     setStorageWarning(data.warning || false);
                     setTabNames(data.tabNames || {});
-                    const cachedTab = localStorage.getItem(CACHE_ACTIVE_TAB);
-                    if (cachedTab && tabsList.includes(cachedTab)) {
-                        setActiveTab(cachedTab);
-                    } else if (tabsList.length > 0 && !activeTabRef.current) {
-                        setActiveTab(tabsList[0]);
+                    setCategories(data.categories || {});
+                    setCategoryNames(data.categoryNames || {});
+                    const categoryOrderFromServer = data.categoryOrder || [];
+                    if (categoryOrderFromServer.length > 0) {
+                        setCategoryOrder(categoryOrderFromServer);
+                        try {
+                            localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(categoryOrderFromServer));
+                        } catch {}
                     }
-                    if (tabsList.length > 0 && !tabsList.includes(activeTabRef.current)) {
-                        setActiveTab(prev => tabsList.includes(prev) ? prev : tabsList[0]);
+                    const cachedTab = localStorage.getItem(CACHE_ACTIVE_TAB);
+                    const cachedCategory = localStorage.getItem(CACHE_ACTIVE_CATEGORY) || '';
+                    
+                    if (cachedCategory) {
+                        const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === cachedCategory);
+                        if (tabsInCategory.length > 0) {
+                            setActiveCategory(cachedCategory);
+                        } else {
+                            setActiveCategory('');
+                            localStorage.removeItem(CACHE_ACTIVE_CATEGORY);
+                        }
+                    }
+                    
+                    if (cachedTab && tabsList.includes(cachedTab)) {
+                        const tabCategory = (data.categories || {})[cachedTab] || '';
+                        if (activeCategory && tabCategory !== activeCategory) {
+                            const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === activeCategory);
+                            if (tabsInCategory.length > 0) {
+                                setActiveTab(tabsInCategory[0]);
+                            } else {
+                                setActiveTab(tabsList[0] || '');
+                            }
+                        } else {
+                            setActiveTab(cachedTab);
+                        }
+                    } else if (tabsList.length > 0) {
+                        const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === activeCategory);
+                        setActiveTab(tabsInCategory.length > 0 ? tabsInCategory[0] : tabsList[0]);
                     }
                     if (data.isGuest !== undefined) {
                         isGuest = data.isGuest;
                     }
                 })
                 .catch(e => {});
-        }, []);
+        }, [activeCategory]);
 
         const loadNotes = useCallback(async (tab, append = false) => {
             if (!tab) return;
@@ -2595,41 +2828,64 @@ const toggleFullscreen = useCallback(() => {
             } catch (e) {}
         }, []);
 
-        const getFullscreenColumns = useCallback(() => {
-            if (!isFullscreen || isMobile) return [];
+// 获取全屏三列 - 基于当前分类筛选
+const getFullscreenColumns = useCallback(() => {
+    if (!isFullscreen || isMobile) return [];
 
-            const activeIdx = tabs.indexOf(activeTab);
-            if (activeIdx === -1) return tabs.slice(0, 3);
+    // 获取当前分类下的Tab列表（按顺序）
+    let tabsInCategory;
+    if (!activeCategory) {
+        // 如果没有选中分类，显示所有Tab
+        tabsInCategory = tabs;
+    } else if (activeCategory === '') {
+        // 选中 "All" - 显示所有Tab
+        tabsInCategory = tabs;
+    } else {
+        // 选中具体分类 - 只显示该分类下的Tab
+        tabsInCategory = tabs.filter(tab => (categories[tab] || '') === activeCategory);
+    }
 
-            const result = [];
-            for (let i = 0; i < 3; i++) {
-                const idx = (activeIdx + i) % tabs.length;
-                result.push(tabs[idx]);
-            }
-            return result;
-        }, [isFullscreen, isMobile, tabs, activeTab]);
+    if (tabsInCategory.length === 0) {
+        // 如果分类下没有Tab，显示所有Tab
+        tabsInCategory = tabs;
+    }
+
+    const activeIdx = tabsInCategory.indexOf(activeTab);
+    if (activeIdx === -1) {
+        // 如果当前激活的Tab不在分类中，取第一个
+        return tabsInCategory.slice(0, 3);
+    }
+
+    // 从当前激活的Tab开始，取3个Tab（循环显示）
+    const result = [];
+    for (let i = 0; i < 3; i++) {
+        const idx = (activeIdx + i) % tabsInCategory.length;
+        result.push(tabsInCategory[idx]);
+    }
+    return result;
+}, [isFullscreen, isMobile, tabs, activeTab, activeCategory, categories]);
 
         const fullscreenColumns = useMemo(() => {
             return getFullscreenColumns();
         }, [getFullscreenColumns]);
-
-        useEffect(() => {
-            if (isFullscreen && !isMobile) {
-                fullscreenColumns.forEach(tab => {
-                    if (tab !== activeTab) {
-                        loadOtherTabNotes(tab);
-                        setFullscreenLoadState(prev => ({
-                            ...prev,
-                            [tab]: {
-                                offset: 0,
-                                hasMore: false,
-                                loading: false
-                            }
-                        }));
-                    }
-                });
-            }
-        }, [isFullscreen, fullscreenColumns, activeTab, isMobile, loadOtherTabNotes]);
+// 加载其他Tab的笔记（仅加载当前分类下的Tab）
+useEffect(() => {
+    if (isFullscreen && !isMobile) {
+        // 只加载当前分类下的Tab
+        const tabsToLoad = filteredTabs.filter(tab => tab !== activeTab);
+        tabsToLoad.forEach(tab => {
+            loadOtherTabNotes(tab);
+            setFullscreenLoadState(prev => ({
+                ...prev,
+                [tab]: {
+                    offset: 0,
+                    hasMore: false,
+                    loading: false
+                }
+            }));
+        });
+    }
+}, [isFullscreen, filteredTabs, activeTab, isMobile, loadOtherTabNotes]);
 
         useEffect(() => {
             if (!isFullscreen || isMobile) return;
@@ -3006,14 +3262,17 @@ const toggleFullscreen = useCallback(() => {
 
         const moveTab = (tab, direction) => {
             if (isGuest) { HFS.toast('Please login to manage tabs', 'info'); return; }
-            const idx = tabs.indexOf(tab);
+            const idx = filteredTabs.indexOf(tab);
             if (idx === -1) return;
 
             const target = direction === 'left' ? idx - 1 : idx + 1;
-            if (target < 0 || target >= tabs.length) return;
+            if (target < 0 || target >= filteredTabs.length) return;
 
             const newTabs = [...tabs];
-            [newTabs[idx], newTabs[target]] = [newTabs[target], newTabs[idx]];
+            const currentIdx = tabs.indexOf(tab);
+            const targetTab = filteredTabs[target];
+            const targetIdx = tabs.indexOf(targetTab);
+            [newTabs[currentIdx], newTabs[targetIdx]] = [newTabs[targetIdx], newTabs[currentIdx]];
             setTabs(newTabs);
 
             fetch('/~/api/notes/reorder-tabs', {
@@ -3038,6 +3297,9 @@ const toggleFullscreen = useCallback(() => {
                 } else {
                     setActiveTab(tab);
                     setFullscreenStarFilter(false);
+                    try {
+                        localStorage.setItem(CACHE_ACTIVE_TAB, tab);
+                    } catch {}
                     setTimeout(() => {
                         const container = document.querySelector('.note-fullscreen-column-active .note-items.note-items-fullscreen');
                         if (container) {
@@ -3091,6 +3353,9 @@ const toggleFullscreen = useCallback(() => {
 
             } else {
                 setActiveTab(tab);
+                try {
+                    localStorage.setItem(CACHE_ACTIVE_TAB, tab);
+                } catch {}
             }
         };
 
@@ -3105,25 +3370,251 @@ const toggleFullscreen = useCallback(() => {
             isDragging && h('div', { className: 'note-drag-overlay' },
                 h('div', { className: 'note-drag-overlay-content' }, dragOverlayContent)
             ),
+            // ========== 全屏模式头部 ==========
+            isFullscreen ? h('div', {
+                className: 'note-panel-header',
+                ref: headerRef,
+                style: {
+                    borderBottom: '1px solid var(--faint-contrast)',
+                    padding: '4px 8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    flexShrink: 0,
+                    flexWrap: 'nowrap',
+                    overflow: 'hidden',
+                    minHeight: '36px',
+                    background: 'var(--bg)',
+                    zIndex: '1'
+                }
+            },
+                h('div', { className: 'note-header-left', style: { 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    flexShrink: 0,
+                    gap: '4px'
+                } },
+                    h('span', {
+                        className: 'note-panel-title',
+                        onClick: toggleFullscreen,
+                        style: { 
+                            cursor: 'pointer',
+                            flexShrink: 0,
+                            fontSize: '0.95em'
+                        },
+                        title: 'Click to exit fullscreen'
+                    }, 'Notes'),
+                    h('span', { className: 'note-fullscreen-indicator' }, ' \u229E'),
+                    fullscreenStarFilter && h('span', { className: 'note-star-filter-indicator' }, '\u2605')
+                ),
+                // 分类标签 - 横向显示
+                h('div', {
+                    className: 'note-fullscreen-categories',
+                    style: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '2px',
+                        flexShrink: 0,
+                        overflowX: 'auto',
+                        padding: '0 4px',
+                        scrollbarWidth: 'none',
+                        msOverflowStyle: 'none',
+                        maxWidth: '35%'
+                    }
+                },
+                    categoryList.map((cat, idx) => {
+                        const isActive = activeCategory === cat;
+                        const displayName = getCategoryDisplayName(cat);
+                        
+                        if (renamingCategory === cat) {
+                            return h('input', {
+                                key: `rename-cat-${cat || 'all'}`,
+                                ref: categoryRenameInputRef,
+                                className: 'note-category-rename-input',
+                                value: renameCategoryValue,
+                                onChange: (e) => setRenameCategoryValue(e.target.value),
+                                onKeyDown: handleCategoryRenameKeyDown,
+                                onBlur: handleCategoryRenameSave,
+                                placeholder: displayName || 'All',
+                                style: {
+                                    background: 'var(--bg)',
+                                    color: 'var(--text)',
+                                    border: '2px solid var(--text)',
+                                    borderRadius: '4px',
+                                    padding: '1px 6px',
+                                    fontSize: '0.65em',
+                                    minWidth: '30px',
+                                    maxWidth: '80px',
+                                    outline: 'none',
+                                    height: '20px'
+                                }
+                            });
+                        }
+                        
+                        return h('span', {
+                            key: cat || 'all',
+                            className: `note-category-tab ${isActive ? 'note-category-tab-active' : ''}`,
+                            style: {
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '2px',
+                                padding: isActive ? '1px 6px' : '1px 4px',
+                                borderRadius: '10px',
+                                fontSize: '0.6em',
+                                cursor: 'pointer',
+                                color: isActive ? 'var(--text)' : 'var(--faint-contrast)',
+                                fontWeight: isActive ? 'bold' : 'normal',
+                                border: isActive ? '1px solid var(--text)' : '1px solid transparent',
+                                transition: 'all 0.15s',
+                                whiteSpace: 'nowrap',
+                                flexShrink: 0,
+                                background: isActive ? 'var(--ghost-contrast)' : 'transparent',
+                                fontFamily: 'inherit',
+                                lineHeight: '1.4',
+                                minHeight: '18px'
+                            },
+                            onClick: () => handleCategoryClick(cat),
+                            onDoubleClick: () => handleCategoryDoubleClick(cat),
+                            onMouseEnter: (e) => {
+                                if (renamingCategory !== cat) {
+                                    e.currentTarget.style.color = 'var(--text)';
+                                    e.currentTarget.style.background = 'var(--ghost-contrast)';
+                                }
+                            },
+                            onMouseLeave: (e) => {
+                                if (renamingCategory !== cat && !isActive) {
+                                    e.currentTarget.style.color = 'var(--faint-contrast)';
+                                    e.currentTarget.style.background = 'transparent';
+                                }
+                            },
+                            title: cat ? 
+                                (isGuest ? '' : 'Double-click to rename') : 
+                                (isGuest ? 'Show all tabs' : 'Double-click to sort categories')
+                        }, [
+                            displayName,
+                            !isGuest && cat !== '' && showCategorySort && h('span', {
+                                style: {
+                                    display: 'inline-flex',
+                                    gap: '0px',
+                                    marginLeft: '1px'
+                                },
+                                onMouseDown: (e) => e.stopPropagation()
+                            },
+                                h('button', {
+                                    style: {
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'inherit',
+                                        cursor: 'pointer',
+                                        fontSize: '0.55em',
+                                        padding: '0 1px',
+                                        borderRadius: '2px',
+                                        lineHeight: '1',
+                                        opacity: 0.5
+                                    },
+                                    onClick: (e) => {
+                                        e.stopPropagation();
+                                        moveCategory(cat, 'left');
+                                    },
+                                    disabled: idx <= 1,
+                                    title: 'Move left'
+                                }, '\u25C0'),
+                                h('button', {
+                                    style: {
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'inherit',
+                                        cursor: 'pointer',
+                                        fontSize: '0.55em',
+                                        padding: '0 1px',
+                                        borderRadius: '2px',
+                                        lineHeight: '1',
+                                        opacity: 0.5
+                                    },
+                                    onClick: (e) => {
+                                        e.stopPropagation();
+                                        moveCategory(cat, 'right');
+                                    },
+                                    disabled: idx >= categoryList.length - 1,
+                                    title: 'Move right'
+                                }, '\u25B6')
+                            )
+                        ]);
+                    })
+                ),
+// Tab列表 - 横向显示（仅显示当前分类下的Tab）
+h('div', {
+    className: 'note-fullscreen-tabs',
+    style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '1px',
+        flex: '1',
+        overflowX: 'auto',
+        padding: '0 4px',
+        scrollbarWidth: 'thin',
+        msOverflowStyle: 'auto',
+        minWidth: '0'
+    }
+},
+    // 使用 filteredTabs 而不是 tabs
+    filteredTabs.length > 0 ?
+        filteredTabs.map((tab, i) =>
+            h('span', { key: tab, className: 'note-tab-wrapper', style: { flexShrink: 0 } },
+                i > 0 && h('span', { className: 'note-tab-sep', style: { fontSize: '0.65em', opacity: 0.3 } }, '|'),
+                h('button', {
+                    className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${fullscreenStarFilter && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+                    onClick: () => handleTabClick(tab),
+                    title: activeTab === tab ? (fullscreenStarFilter ? 'Click to exit star filter' : 'Click to filter starred') : 'Click to select tab',
+                    style: {
+                        padding: '2px 6px',
+                        fontSize: '0.65em',
+                        minWidth: 'auto',
+                        border: activeTab === tab ? '1px solid var(--text)' : 'none',
+                        borderBottom: activeTab === tab ? 'none' : 'none',
+                        borderRadius: activeTab === tab ? '6px 6px 0 0' : '0',
+                        background: activeTab === tab ? 'var(--ghost-contrast)' : 'transparent',
+                        color: activeTab === tab ? 'var(--text)' : 'var(--faint-contrast)',
+                        fontWeight: activeTab === tab ? 'bold' : 'normal'
+                    }
+                }, getTabDisplayName(tab))
+            )
+        ) :
+        h('span', { style: { fontSize: '0.7em', color: 'var(--faint-contrast)', padding: '2px 4px' } }, 'No tabs')
+),
+                h('div', { className: 'note-header-right', style: { flexShrink: 0, fontSize: '0.7em', display: 'flex', alignItems: 'center', gap: '4px' } },
+                    h('button', { 
+                        className: 'note-close-btn', 
+                        onClick: handleClose,
+                        style: { fontSize: '1.8em', padding: '0 4px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--faint-contrast)' }
+                    }, '\u00D7')
+                )
+            ) :
+            // ========== 非全屏模式头部 ==========
             h('div', {
                 className: 'note-panel-header',
                 ref: headerRef,
-                style: isFullscreen ? {
-                    borderBottom: '1px solid var(--faint-contrast)',
-                    padding: '4px 8px'
-                } : {}
+                style: {}
             },
-                h('div', { className: 'note-header-left', style: isFullscreen ? { flex: '0 0 auto' } : {} },
-h('span', {
-    className: 'note-panel-title',
-    onClick: toggleFullscreen,
-    style: { cursor: isMobile ? 'default' : 'pointer' },
-    title: isFullscreen ? 'Click to exit fullscreen' : (isMobile ? 'Fullscreen not available on mobile' : 'Click to enter fullscreen')
-}, isGuest ? 'Notes (Guest)' : 'Notes'),
-                    isFullscreen && h('span', { className: 'note-fullscreen-indicator' }, ' \u229E'),
-                    starFilterActive && !isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '\u2605'),
-                    fullscreenStarFilter && isFullscreen && h('span', { className: 'note-star-filter-indicator' }, '\u2605'),
-                    !isGuest && !isFullscreen && h('div', { className: 'note-font-btns-header' },
+                h('div', { className: 'note-header-left', style: { 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    flex: '1', 
+                    minWidth: '0',
+                    flexWrap: 'nowrap',
+                    gap: '6px',
+                    overflow: 'hidden'
+                } },
+                    h('span', {
+                        className: 'note-panel-title',
+                        onClick: toggleFullscreen,
+                        style: { 
+                            cursor: isMobile ? 'default' : 'pointer',
+                            flexShrink: 0
+                        },
+                        title: isFullscreen ? 'Click to exit fullscreen' : (isMobile ? 'Fullscreen not available on mobile' : 'Click to enter fullscreen')
+                    }, isGuest ? 'Notes (Guest)' : 'Notes'),
+                    !isGuest && !isFullscreen && h('div', { className: 'note-font-btns-header', style: { flexShrink: 0 } },
                         h('button', {
                             className: 'note-font-btn-header',
                             onClick: increaseFont,
@@ -3135,34 +3626,141 @@ h('span', {
                             title: 'Reset font size'
                         }, 'A')
                     ),
-                    storageWarning && h('span', { className: 'note-warn-icon', title: 'Storage limit approaching' }, '\u26A0')
-                ),
-                isFullscreen && h('div', {
-                    className: 'note-tabs',
-                    style: {
-                        flex: '1',
-                        display: 'flex',
-                        alignItems: 'center',
-                        overflowX: 'auto',
-                        padding: '0 4px',
-                        margin: '0 4px',
-                        gap: '0'
-                    }
-                },
-                    tabs.map((tab, i) =>
-                        h('span', { key: tab, className: 'note-tab-wrapper', style: { flexShrink: 0 } },
-                            i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
-                            h('button', {
-                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${fullscreenStarFilter && activeTab === tab ? 'note-tab-star-mode' : ''}`,
-                                onClick: () => handleTabClick(tab),
-                                title: activeTab === tab ? (fullscreenStarFilter ? 'Click to exit star filter' : 'Click to filter starred') : 'Click to select tab',
+                    storageWarning && h('span', { className: 'note-warn-icon', title: 'Storage limit approaching' }, '\u26A0'),
+                    !isFullscreen && h('div', { 
+                        className: 'note-header-categories',
+                        style: { 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: '2px',
+                            flex: '1',
+                            minWidth: '0',
+                            overflowX: 'auto',
+                            padding: '0 2px',
+                            flexWrap: 'nowrap',
+                            scrollbarWidth: 'none',
+                            msOverflowStyle: 'none'
+                        }
+                    },
+                        categoryList.map((cat, idx) => {
+                            const isActive = activeCategory === cat;
+                            const displayName = getCategoryDisplayName(cat);
+                            
+                            if (renamingCategory === cat) {
+                                return h('input', {
+                                    key: `rename-cat-${cat || 'all'}`,
+                                    ref: categoryRenameInputRef,
+                                    className: 'note-category-rename-input',
+                                    value: renameCategoryValue,
+                                    onChange: (e) => setRenameCategoryValue(e.target.value),
+                                    onKeyDown: handleCategoryRenameKeyDown,
+                                    onBlur: handleCategoryRenameSave,
+                                    placeholder: displayName || 'All',
+                                    style: {
+                                        background: 'var(--bg)',
+                                        color: 'var(--text)',
+                                        border: '2px solid var(--text)',
+                                        borderRadius: '4px',
+                                        padding: '1px 6px',
+                                        fontSize: '0.7em',
+                                        minWidth: '40px',
+                                        maxWidth: '100px',
+                                        outline: 'none',
+                                        height: '22px'
+                                    }
+                                });
+                            }
+                            
+                            return h('span', {
+                                key: cat || 'all',
+                                className: `note-category-tab ${isActive ? 'note-category-tab-active' : ''}`,
                                 style: {
-                                    padding: '4px 8px',
-                                    fontSize: '0.85em',
-                                    minWidth: 'auto'
-                                }
-                            }, getTabDisplayName(tab))
-                        )
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: isActive ? '2px 10px' : '2px 8px',
+                                    borderRadius: '12px',
+                                    fontSize: '0.7em',
+                                    cursor: 'pointer',
+                                    color: isActive ? 'var(--text)' : 'var(--faint-contrast)',
+                                    fontWeight: isActive ? 'bold' : 'normal',
+                                    border: isActive ? '1px solid var(--text)' : '1px solid transparent',
+                                    transition: 'all 0.15s',
+                                    whiteSpace: 'nowrap',
+                                    flexShrink: 0,
+                                    background: isActive ? 'var(--ghost-contrast)' : 'transparent',
+                                    fontFamily: 'inherit',
+                                    lineHeight: '1.4',
+                                    minHeight: '22px'
+                                },
+                                onClick: () => handleCategoryClick(cat),
+                                onDoubleClick: () => handleCategoryDoubleClick(cat),
+                                onMouseEnter: (e) => {
+                                    if (renamingCategory !== cat) {
+                                        e.currentTarget.style.color = 'var(--text)';
+                                        e.currentTarget.style.background = 'var(--ghost-contrast)';
+                                    }
+                                },
+                                onMouseLeave: (e) => {
+                                    if (renamingCategory !== cat && !isActive) {
+                                        e.currentTarget.style.color = 'var(--faint-contrast)';
+                                        e.currentTarget.style.background = 'transparent';
+                                    }
+                                },
+                                title: cat ? 
+                                    (isGuest ? '' : 'Double-click to rename') : 
+                                    (isGuest ? 'Show all tabs' : 'Double-click to sort categories')
+                            }, [
+                                displayName,
+                                !isGuest && cat !== '' && showCategorySort && h('span', {
+                                    style: {
+                                        display: 'inline-flex',
+                                        gap: '0px',
+                                        marginLeft: '2px'
+                                    },
+                                    onMouseDown: (e) => e.stopPropagation()
+                                },
+                                    h('button', {
+                                        style: {
+                                            background: 'none',
+                                            border: 'none',
+                                            color: 'inherit',
+                                            cursor: 'pointer',
+                                            fontSize: '0.65em',
+                                            padding: '0 1px',
+                                            borderRadius: '2px',
+                                            lineHeight: '1',
+                                            opacity: 0.5
+                                        },
+                                        onClick: (e) => {
+                                            e.stopPropagation();
+                                            moveCategory(cat, 'left');
+                                        },
+                                        disabled: idx <= 1,
+                                        title: 'Move left'
+                                    }, '\u25C0'),
+                                    h('button', {
+                                        style: {
+                                            background: 'none',
+                                            border: 'none',
+                                            color: 'inherit',
+                                            cursor: 'pointer',
+                                            fontSize: '0.65em',
+                                            padding: '0 1px',
+                                            borderRadius: '2px',
+                                            lineHeight: '1',
+                                            opacity: 0.5
+                                        },
+                                        onClick: (e) => {
+                                            e.stopPropagation();
+                                            moveCategory(cat, 'right');
+                                        },
+                                        disabled: idx >= categoryList.length - 1,
+                                        title: 'Move right'
+                                    }, '\u25B6')
+                                )
+                            ]);
+                        })
                     )
                 ),
                 h('div', { className: 'note-header-right' },
@@ -3253,31 +3851,33 @@ h('span', {
             ),
             !isFullscreen && h('div', { className: 'note-tabs-container' },
                 h('div', { className: 'note-tabs' },
-                    tabs.map((tab, i) =>
-                        h('span', { key: tab, className: 'note-tab-wrapper' },
-                            i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
-                            renamingTab === tab ? h('input', {
-                                ref: renameInputRef,
-                                className: 'note-tab-rename-input',
-                                value: renameValue,
-                                onChange: (e) => setRenameValue(e.target.value),
-                                onKeyDown: handleRenameKeyDown,
-                                onBlur: handleRenameSave,
-                                placeholder: tab
-                            }) : h('button', {
-                                className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
-                                onClick: () => handleTabClick(tab),
-                                title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
-                            }, getTabDisplayName(tab))
-                        )
-                    )
+                    filteredTabs.length > 0 ?
+                        filteredTabs.map((tab, i) =>
+                            h('span', { key: tab, className: 'note-tab-wrapper' },
+                                i > 0 && h('span', { className: 'note-tab-sep' }, '|'),
+                                renamingTab === tab ? h('input', {
+                                    ref: renameInputRef,
+                                    className: 'note-tab-rename-input',
+                                    value: renameValue,
+                                    onChange: (e) => setRenameValue(e.target.value),
+                                    onKeyDown: handleRenameKeyDown,
+                                    onBlur: handleRenameSave,
+                                    placeholder: tab
+                                }) : h('button', {
+                                    className: `note-tab ${activeTab === tab ? 'note-tab-active' : ''} ${starFilterActive && activeTab === tab ? 'note-tab-star-mode' : ''}`,
+                                    onClick: () => handleTabClick(tab),
+                                    title: activeTab === tab ? (starFilterActive ? 'Click to exit star filter' : 'Click to filter starred') : (isGuest ? '' : 'Triple-click to rename')
+                                }, getTabDisplayName(tab))
+                            )
+                        ) :
+                        h('div', { className: 'note-empty', style: { padding: '8px', fontSize: '0.85em' } }, 'No tabs in this category')
                 ),
-                showSortButtons && h('div', { className: 'note-tab-sort' },
+                showSortButtons && filteredTabs.length > 0 && h('div', { className: 'note-tab-sort' },
                     h('button', {
                         className: 'note-sort-btn',
                         onMouseDown: handleSortBtnMouseDown,
                         onClick: () => moveTab(activeTab, 'left'),
-                        disabled: tabs.indexOf(activeTab) <= 0,
+                        disabled: filteredTabs.indexOf(activeTab) <= 0,
                         title: 'Move left'
                     }, '\u25C0'),
                     h('button', {
@@ -3290,7 +3890,7 @@ h('span', {
                                 handleRenameStart(currentTab);
                             }, 50);
                         },
-                        disabled: tabs.indexOf(activeTab) >= tabs.length - 1,
+                        disabled: filteredTabs.indexOf(activeTab) >= filteredTabs.length - 1,
                         title: 'Move right'
                     }, '\u25B6')
                 )
@@ -3306,9 +3906,17 @@ h('span', {
                         gap: '4px',
                         flex: '1',
                         overflow: 'hidden'
-                    } : {}
+                    } : {
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(3, 1fr)',
+                        gap: '6px',
+                        flex: '1',
+                        overflow: 'hidden',
+                        minHeight: '0',
+                        padding: '6px',
+                        background: 'var(--bg)'
+                    }
                 },
-                    // 手机模式只显示当前激活列，桌面模式显示三列
                     (isMobile ? [activeTab] : fullscreenColumns).map((tab, colIdx) => {
                         const isActive = tab === activeTab;
                         const tabData = isActive ?
