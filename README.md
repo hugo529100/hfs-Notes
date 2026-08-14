@@ -5,471 +5,141 @@ Before reading the AI-generated content below, let me briefly introduce this plu
 
 
 
+Notes Plugin - User Guide
+📝 Introduction
+Notes is a lightweight note-taking tool integrated directly into HFS (HTTP File Server). It allows you to:
 
-Notes Plugin Documentation
-I. Overview
-Notes is a lightweight, built-in note-taking tool for HFS (HTTP File Server) that supports multi-tab management, real-time synchronization, auto-backup, TXT export, and file uploads (images, videos, and attachments). Version 2.4 introduces a revolutionary file-based storage architecture that eliminates note limits and provides superior data resilience.
+Create multiple independent tabs to organize your notes
 
-Version: 2.4
-API Required: 8.87
-Repository: Hug3O/Notes
+Support text, images, videos, audio, and file attachments
 
-II. Key Features
-Feature	Description
-File-Based Storage	Each note stored as an independent JSON file for maximum reliability
-Unlimited Notes	No maximum note count or character limit per note
-Crash Resilience	Single corrupted note never affects the entire database
-Multi-Tab	Create multiple independent note tabs, rename, reorder
-Real-Time Sync	Notes sync instantly across all connected clients via WebSocket
-File Uploads	Support images (40MB), videos (100MB), and other files (100MB)
-Drag & Drop	Drag files directly into the panel to upload
-Long Press Upload	Long press the Send button to upload files
-Note Editing	Double-click notes to edit, Shift+Enter to save
-Star/Filter	Star important notes, filter to show starred only
-Collapse/Expand	Auto-collapse long notes (>100 lines), manual toggle
-Search	Full-text search with match navigation (▲/▼)
-Fullscreen Mode	Click the title to enter 3-column fullscreen view
-Auto-Backup	Configurable interval backups with retention policy
-TXT Export	Auto-export notes as individual TXT files organized by tab
-Font Control	Increase (A+) or reset (A) font size
-User Restrictions	Optional whitelist for allowed users
-Admin Panel	Overview, backup, import/export, clear tabs via API
-III. Version 2.4 - What's New
-🏗️ File-Based Storage Architecture
-The entire storage system has been rebuilt from the ground up. Each note is now stored as an independent file rather than being packed into a single database.
+Auto-save notes with real-time synchronization
 
-Benefits:
+Search, star, and collapse notes for better management
 
-No Note Limits: Removed the 500-notes-per-tab limit
+🚀 Getting Started
+1. Open Notes
+Click the 「✐ Notes」 button in the HFS top menu bar. The notes panel will slide out from the right side.
 
-No Character Limits: Removed the 2000-character-per-note limit
+2. Send a Note
+Type your message in the input box at the bottom
 
-Crash Isolation: A single corrupted note file won't crash the entire tab or plugin
+Press Shift + Enter to send
 
-Easy Recovery: Damaged notes can be deleted individually without data loss
+3. Upload Files
+Long press the "Send" button (about 0.6 seconds) → Select files to upload
 
-Better Backup: Mirror-based backups preserve the exact file structure
+Or simply drag & drop files directly into the notes panel
 
-📂 TXT Export Overhaul
-TXT exports now mirror the file structure:
+Supported formats are automatically converted to the appropriate markup:
 
-Each export creates a timestamped folder
+Images → [img:fileID]
 
-Inside, each tab has its own subdirectory
+Videos/Audio → [mov:fileID:displayName]
 
-Each note is exported as an individual .txt file
+Other files → [att:fileID:displayName]
 
-File names use the note's timestamp for easy identification
+📂 Tab Management
+Switch Tabs
+Click on a tab name at the top to switch. Each tab stores its notes independently.
 
-IV. Configuration Options
-Config	Type	Default	Description
-tabList	Array	[{ name: 'General', publicNote: false }]	Define tabs. Each tab has independent storage. Set publicNote: true to allow guest access
-backupInterval	Number	6	Hours between auto-backups (0 = disabled)
-backupRetentionDays	Number	3	Days to retain backup files before cleanup
-autoExportTxt	Boolean	true	Auto-export notes as individual TXT files alongside each backup
-restrictUsers	Boolean	false	Restrict access to specific users only
-allowedUsers	List	[]	Whitelist of usernames (only when restrictUsers is true)
-ffmpeg_path	String	ffmpeg.exe	Path to FFmpeg for video thumbnail extraction
-thumbnail_time	String	00:00:05	Time position for video thumbnail (HH:MM:SS)
-thumbQuality	Number	70	JPEG quality for thumbnails (1-100)
-thumbPixels	Number	800	Longest side dimension of thumbnails in pixels
-useSharpPlugin	Boolean	true	Use rejetto/sharp plugin for better thumbnails
-V. How to Use
-5.1 Opening Notes
-Click the ✐ Notes button in the HFS menu bar. The notes panel appears as:
+Filter by Stars
+Single-click an active tab → Toggle "show only starred notes"
 
-Desktop: Sliding panel on the right side (450px wide)
+Rename a Tab
+Double-click the tab name → Enter new name → Press Enter to confirm
 
-Mobile: Full-screen panel from the bottom
+Reorder Tabs
+Click the sort buttons (◀ ▶) next to the tabs
 
-5.2 Managing Tabs
-Switch tabs: Click on tab names
+Drag to adjust the order
 
-Star filter: Click the active tab again to toggle starred notes filter (★ indicator)
+📂 Category Management
+Create/Assign Categories
+In the plugin.js configuration, set the category field for each tab. Tabs with the same category will be automatically grouped together.
 
-Rename tabs: Triple-click a tab quickly, type new name, press Enter to save
+Switch Categories
+Click a category label to filter and display only the tabs belonging to that category.
 
-Reorder tabs: Use ◀ ▶ buttons to move tabs left/right
+Rename a Category
+Double-click the category name → Enter new name → Press Enter to confirm
 
-5.3 Writing Notes
-Type your note in the input field at the bottom
+Reorder Categories
+Double-click the "All" category to enter sorting mode → Use ◀ ▶ buttons to adjust the order
 
-Press Shift+Enter or click Send to submit
+⭐ Note Operations
+Edit a Note
+Double-click on the note content → Enter edit mode
 
-No character limit - write as much as you need
+Click ✓ to save, or press Shift + Enter
 
-Long notes (>100 lines) are auto-collapsed for readability
+Click ✕ to cancel
 
-5.4 Uploading Files
-Method 1 - Long Press: Long press the Send button (≥600ms) to open file picker. Supports multi-select.
+Delete a Note
+Click the ✕ button in the top-right corner of the note → Confirm deletion (all attachments will be removed as well)
 
-Method 2 - Drag & Drop: Drag files directly into the notes panel. A dashed border indicates the upload zone.
+Star a Note
+Click the ★ button next to the note to mark it as important
 
-Method 3 - Edit Mode: Double-click a note to edit, click the 📎 button to upload files.
+Collapse/Expand
+Click the ▼/▶ button in the top-right corner of the note to collapse long notes and save space
 
-Supported File Types:
+Copy Content
+In edit mode, click the Ⓒ button to copy the entire note content
 
-Type	Max Size	Storage	Tag Format
-Images	40MB	img/	[img:fileId]
-Videos	100MB	mov/	[mov:fileId:name]
-Audio	100MB	mov/	[mov:fileId:name]
-Others	100MB	att/	[att:fileId:name]
-5.5 Managing Notes
-Star: Click ★ on a note to mark as important
+🔍 Search Function
+Click the ⌢ search button at the top
 
-Edit: Double-click a note to enter edit mode
+Enter a keyword → Automatically searches all historical notes
 
-Delete: Click × button on a note (confirmation required)
+Use the ▲/▼ buttons to jump to the previous/next match
 
-Collapse/Expand: Click ▼/▶ to toggle long notes
+🖥️ Fullscreen Mode
+Click the "Notes" title to enter fullscreen mode (desktop only)
 
-Copy: In edit mode, click 📋 to copy all content
+In fullscreen mode, all tabs in the current category are displayed side by side (up to 3 columns)
 
-5.6 Searching
-Click Ϙ (search toggle) in the header
+Press Esc or click ✕ to exit
 
-Type search term - notes with matches are filtered
-
-Use ▲/▼ to navigate between matches
-
-Active match is highlighted and scrolled into view
-
-Click ✕ to exit search
-
-5.7 Font Size
-Use A+ and A buttons in the header to increase or reset font size.
-
-5.8 Fullscreen Mode
-Click the Notes title to enter fullscreen mode with a 3-column grid view. The active tab is in the left column, with adjacent tabs in the middle and right columns. Click the title again or press Esc to exit.
-
-VI. Storage Architecture (v2.4)
-6.1 Directory Structure
-text
-storage/
-
-├── tabs/                              # New file-based note storage
-
-│   ├── _tabs_map.json                 # Tab order & custom names mapping
-
-│   ├── General/                       # Tab folder (sanitized name)
-
-│   │   ├── _index.json                # Tab index: timestamps + metadata
-
-│   │   ├── 2026-07-09T14_30_25_000Z.json   # Individual note content
-
-│   │   ├── 2026-07-09T14_31_10_000Z.json
-
-│   │   └── ...
-
-│   ├── Work/
-
-│   │   ├── _index.json
-
-│   │   └── ...
-
-│   └── Personal/
-
-│       ├── _index.json
-
-│       └── ...
-
-├── img/                               # Images (by tab)
-
-│   └── {tab}/
-
-│       ├── temp/                      # Temporary images (auto-promoted)
-
-│       └── *.jpg/png/webp...
-
-├── mov/                               # Videos & Audio (by tab)
-
-│   └── {tab}/
-
-│       ├── .filenames                 # Original filename mapping
-
-│       └── *.mp4/webm/mp3...
-
-├── att/                               # Attachments (by tab)
-
-│   └── {tab}/
-
-│       ├── .filenames                 # Original filename mapping
-
-│       └── *.*
-
-├── thumb/                             # Thumbnails (by tab)
-
-│   └── {tab}/
-
-│       └── *.jpg
-
-└── backup/                            # Backups
-
-    ├── 20260709_143025/               # JSON mirror backup folder
-    
-    │   └── tabs/
-    
-    │       ├── _tabs_map.json
-    
-    │       ├── General/
-    
-    │       │   ├── _index.json
-    
-    │       │   └── *.json
-    
-    │       └── ...
-    
-    └── txt_exports/                   # TXT export folder
-    
-        └── 20260709_143025/           # Export timestamp folder
-        
-            ├── General/               # Tab subdirectory
-            
-            │   ├── 2026-07-09T14_30_25_000Z.txt
-            
-            │   ├── 2026-07-09T14_31_10_000Z.txt
-            
-            │   └── ...
-            
-            └── Work/
-            
-                └── ...
-6.2 Core Data Files
-_tabs_map.json - Tab Mapping
-json
-{
-  "order": ["General", "Work", "Personal"],
-  "names": {
-    "Work": "Office Notes",
-    "Personal": "My Diary"
-  }
-}
-<tab>/_index.json - Tab Index
-json
-{
-  "notes": {
-    "2026-07-09T14:30:25.000Z": {
-      "u": "admin",
-      "starred": false,
-      "collapsed": false
-    },
-    "2026-07-09T14:31:10.000Z": {
-      "u": "user1",
-      "starred": true,
-      "collapsed": true
-    }
-  }
-}
-<tab>/<timestamp>.json - Note Content
-text
-This is the plain text content of the note.
-No metadata - just the message body.
-Can be extremely long without limits.
-6.3 File ID Format
-Media files use: YYYYMMDDHHmmss_xxxxxx.ext
-
-Timestamp portion: 14 digits (year, month, day, hour, minute, second)
-
-Random portion: 6 hex characters
-
-Extension: Preserved from original file
-
-VII. Data Flow
-7.1 Adding a Note
-Client sends POST /api/notes/add with {m: "text", tab: "General"}
-
-Server sanitizes text (removes dangerous characters)
-
-Server creates timestamp: new Date().toISOString()
-
-Server writes content to tabs/General/<timestamp>.json
-
-Server updates tabs/General/_index.json with metadata
-
-Server broadcasts newNote event to all connected clients
-
-If autoExportTxt is enabled, triggers TXT export
-
-7.2 Reading Notes (Paginated)
-Client sends GET /api/notes/list?tab=General&offset=0&limit=10
-
-Server reads tabs/General/_index.json to get all timestamps
-
-Server slices timestamps by offset/limit (newest first)
-
-For each timestamp, reads tabs/General/<timestamp>.json
-
-Returns combined notes with metadata, thumbnail info, and file names
-
-7.3 Backup Process
-Creates backup/<timestamp>/tabs/ directory
-
-Copies entire tabs/ folder structure (mirror backup)
-
-Also copies _tabs_map.json
-
-If autoExportTxt is enabled, creates individual TXT files
-
-VIII. Cleanup Mechanisms
-8.1 On Note Deletion
-Removes entry from _index.json
-
-Deletes the note content file (<timestamp>.json)
-
-Deletes all referenced images, videos, attachments from storage
-
-Cleans up filename mappings
-
-8.2 On Note Update
-Compares old and new content references
-
-Removes files no longer referenced
-
-Promotes temp images to permanent storage
-
-8.3 On Tab Clear (Admin)
-Backs up data first
-
-Deletes entire tab folder (tabs/<tab>/)
-
-Removes all files in img/, mov/, att/ directories for that tab
-
-Cleans temp directory and thumbnails
-
-Re-creates empty tab directory on next use
-
-8.4 Temp Image Cleanup
-Runs every hour via timer
-
-Removes temp images older than 1 hour (TEMP_IMG_TTL)
-
-Empty temp directories are removed
-
-8.5 Backup Cleanup
-Runs after each backup
-
-Removes backup folders older than backupRetentionDays
-
-Removes TXT export folders older than backupRetentionDays
-
-IX. Video & Audio Player
-9.1 Video Player
-Initial State: Thumbnail cover with ▶ play icon (when thumbnail available)
-
-Fallback: Dark background with ▶ and "Click to play video" text
-
-On Click: Cover/placeholder hides, video loads and plays
-
-After Play: Native HTML5 video controls appear
-
-Thumbnails: Auto-extracted using FFmpeg at configured time position
-
-Multiple Attempts: FFmpeg tries multiple time offsets to avoid black frames
-
-9.2 Audio Player
-Compact inline player with 🎵 icon
-
-Shows filename above the player
-
-Native HTML5 audio controls
-
-X. Admin API Endpoints
-All admin endpoints require authentication and appropriate permissions.
-
-Endpoint	Method	Description
-/~/api/notes/admin/overview	GET	Database stats, backups, file statistics
-/~/api/notes/admin/export	GET	Export all notes as JSON (optional ?tab=xxx)
-/~/api/notes/admin/import	POST	Import notes from JSON (auto-backup first)
-/~/api/notes/admin/backup	POST	Trigger manual backup + TXT export
-/~/api/notes/admin/clear	POST	Clear all notes and files for a tab
-/~/api/notes/admin/export-txt	POST	Trigger manual TXT export
-XI. Public API Endpoints
-Endpoint	Method	Description
-/~/api/notes/check	GET	Check access and guest status
-/~/api/notes/tabs	GET	Get tab list, counts, names
-/~/api/notes/list	GET	Paginated note listing (?tab=&offset=&limit=)
-/~/api/notes/add	POST	Add a new note ({m, tab, collapsed?})
-/~/api/notes/update	POST	Update existing note ({ts, tab, m})
-/~/api/notes/toggle-star	POST	Toggle star status ({ts, tab})
-/~/api/notes/toggle-collapse	POST	Toggle collapse status ({ts, tab})
-/~/api/notes/delete	POST	Delete a note ({ts, tab})
-/~/api/notes/reorder-tabs	POST	Reorder tabs ({tabs: [...]})
-/~/api/notes/rename-tab	POST	Rename a tab ({tab, newName})
-/~/api/notes/upload-image	POST	Upload an image (base64)
-/~/api/notes/upload-file	POST	Upload a video/audio/file (base64)
-XII. Auto-Backup & Export
-Backup Interval: Default every 6 hours (configurable via backupInterval)
-
-Backup Format: Full mirror of tabs/ directory structure
-
-Backup Location: backup/<YYYYMMDD_HHmmss>/tabs/
-
-Retention: Folders older than backupRetentionDays are auto-deleted (default 3 days)
-
-TXT Export: Each note exported as individual .txt file in backup/txt_exports/<timestamp>/<tab>/
-
-On Startup: Initial backup triggered via config subscription (500ms delay)
-
-On Config Change: Immediate backup triggered when backup settings change
-
-XIII. Performance & Limits
-Parameter	Value	Description
-PAGE_SIZE	10	Notes loaded per page
-SPAM_DELAY	200ms	Minimum interval between posts per user
-MAX_STORAGE_WARNING	400 notes	Warning threshold per tab (soft limit)
-MAX_IMG_SIZE	40MB	Maximum image upload size
-MAX_FILE_SIZE	100MB	Maximum video/attachment upload size
-TEMP_IMG_TTL	1 hour	Temp image lifetime before cleanup
-THUMB_QUALITY	85	Default JPEG quality for thumbnails
-Note: Version 2.4 has no hard limits on note count or character length. The storage warning is informational only.
-
-XIV. Key Technical Points
-File-Based Isolation: Each note is a separate file. Corruption in one file cannot affect others
-
-Atomic Operations: Index updates and content writes are separate operations for safety
-
-Image Promotion: Uploaded images go to temp/ first, then moved to permanent storage when the note is saved
-
-Orphan Cleanup: Temp images not referenced by any note after 1 hour are removed
-
-Real-Time Notifications: Uses HFS WebSocket event system for instant multi-client sync
-
-Mobile Optimization: Handles virtual keyboard viewport changes for sticky headers
-
-Content Rendering: Supports inline images, videos, attachments, links, and auto-detection of image URLs
-
-Search: Case-insensitive regex matching with individual match navigation
-
-Video Thumbnails: FFmpeg extraction with multiple time-offset attempts to avoid black frames
-
-Sharp Integration: Optional rejetto/sharp plugin for better image thumbnail quality
-
-XV. Migration from v1.x/v2.0-v2.3
-Version 2.4 uses a completely new file-based storage system. Old notes_*.json database files are not automatically migrated. To migrate:
-
-Export data from the admin panel (JSON format) before upgrading
-
-Upgrade to v2.4
-
-Import the JSON export via the admin panel
-
-Verify all notes are intact
-
-Old database files (notes_*.json) in the storage directory can be safely removed after migration.
-
-XVI. Browser Compatibility
-Modern browsers (Chrome, Firefox, Safari, Edge)
-
-Mobile responsive with separate layouts for ≤768px and >768px
-
-Touch support for mobile long-press upload
-
-VisualViewport API for mobile keyboard handling
-
-Fullscreen API support required for fullscreen mode
-
-EventSource (SSE) support required for real-time notifications
-
+🎯 Keyboard Shortcuts
+Action	Shortcut
+Send note	Shift + Enter
+Save edit	Shift + Enter
+Cancel edit	Esc
+Open/Close Notes	Click menu button
+⚙️ Admin Settings
+The following options can be configured in the HFS plugin settings:
+
+Setting	Description
+Tab List	Add/remove/configure tabs and categories
+Restrict Users	Restrict access to specific users
+Backup Interval	Auto-backup interval (hours)
+Auto Export TXT	Export notes as TXT files during backup
+Thumbnail Settings	Video thumbnail format (JPG/GIF) and quality
+FFmpeg Path	Path to FFmpeg for video thumbnail extraction
+📦 Storage Locations
+Type	Path
+Note data	storage/notes/tabs/[TabName]/
+Images	storage/notes/img/[TabName]/
+Videos/Audio	storage/notes/mov/[TabName]/
+Attachments	storage/notes/att/[TabName]/
+Thumbnails	storage/notes/thumb/[TabName]/
+Backups	storage/notes/backup/
+❓ FAQ
+Q: Can guests use Notes?
+A: Yes, but only on tabs marked as "public notes," and they can only send plain text.
+
+Q: What is the file size limit?
+A: Images up to 80MB, other files up to 200MB.
+
+Q: Are notes automatically backed up?
+A: Yes, backups run automatically at the configured interval and are retained for the specified number of days.
+
+📌 Tip: All data is stored on the server. Please perform regular backups to ensure data safety.
+
+<img width="1080" height="2400" alt="Screenshot_2026-08-14-08-11-47-568_com android chrome" src="https://github.com/user-attachments/assets/931bc157-6f6c-4997-98bc-ec1543708a29" />
+<img width="1080" height="2400" alt="Screenshot_2026-08-14-08-11-11-484_com android chrome" src="https://github.com/user-attachments/assets/5268c9f9-905a-4f4a-8452-d87d64cd7863" />
+<img width="1080" height="2400" alt="Screenshot_2026-08-14-08-11-27-827_com android chrome" src="https://github.com/user-attachments/assets/fd6c8669-82b8-42c9-87a2-7ece5138606f" />
 
 
 
