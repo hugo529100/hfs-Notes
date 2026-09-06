@@ -1718,26 +1718,32 @@
                     if (!data) return;
 
                     if (e === 'tabsReordered') {
-                        if (data.tabs && Array.isArray(data.tabs)) {
-                            setTabs(data.tabs);
-                            if (data.categories) {
-                                setCategories(data.categories);
-                            }
-                            if (data.categoryOrder) {
-                                setCategoryOrder(data.categoryOrder);
-                                try {
-                                    localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(data.categoryOrder));
-                                } catch {}
-                            }
-                            if (data.categoryNames) {
-                                setCategoryNames(data.categoryNames);
-                            }
-                            if (!data.tabs.includes(activeTabRef.current)) {
-                                setActiveTab(data.tabs[0] || '');
-                            }
-                        }
-                        return;
-                    }
+    if (data.tabs && Array.isArray(data.tabs)) {
+        setTabs(data.tabs);
+        if (data.categories) {
+            setCategories(data.categories);
+        }
+        if (data.categoryOrder) {
+            setCategoryOrder(data.categoryOrder);
+            try {
+                localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(data.categoryOrder));
+            } catch {}
+        }
+        if (data.categoryNames) {
+            setCategoryNames(data.categoryNames);
+        }
+        // 修复：只有当前 tab 不在新列表时才切换
+        const currentTab = activeTabRef.current;
+        if (currentTab && !data.tabs.includes(currentTab)) {
+            // 尝试找同分类的 tab
+            const sameCategoryTabs = data.tabs.filter(tab => 
+                (data.categories || {})[tab] === (data.categories || {})[currentTab]
+            );
+            setActiveTab(sameCategoryTabs.length > 0 ? sameCategoryTabs[0] : data.tabs[0] || '');
+        }
+    }
+    return;
+}
 
                     if (e === 'tabRenamed') {
                         setTabNames(prev => {
@@ -2533,58 +2539,73 @@
         };
 
         const loadTabs = useCallback(() => {
-            fetch('/~/api/notes/tabs')
-                .then(r => r.json())
-                .then(data => {
-                    const tabsList = data.tabs || [];
-                    setTabs(tabsList);
-                    setTabCounts(data.counts || {});
-                    setStorageWarning(data.warning || false);
-                    setTabNames(data.tabNames || {});
-                    setCategories(data.categories || {});
-                    setCategoryNames(data.categoryNames || {});
-                    const categoryOrderFromServer = data.categoryOrder || [];
-                    if (categoryOrderFromServer.length > 0) {
-                        setCategoryOrder(categoryOrderFromServer);
-                        try {
-                            localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(categoryOrderFromServer));
-                        } catch {}
+    fetch('/~/api/notes/tabs')
+        .then(r => r.json())
+        .then(data => {
+            const tabsList = data.tabs || [];
+            setTabs(tabsList);
+            setTabCounts(data.counts || {});
+            setStorageWarning(data.warning || false);
+            setTabNames(data.tabNames || {});
+            setCategories(data.categories || {});
+            setCategoryNames(data.categoryNames || {});
+            
+            const categoryOrderFromServer = data.categoryOrder || [];
+            if (categoryOrderFromServer.length > 0) {
+                setCategoryOrder(categoryOrderFromServer);
+                try {
+                    localStorage.setItem(CACHE_CATEGORY_ORDER, JSON.stringify(categoryOrderFromServer));
+                } catch {}
+            }
+            
+            // === 修复开始 ===
+            const currentTab = activeTabRef.current;
+            const currentCategory = activeCategory;
+            
+            // 优先保持当前 tab
+            if (currentTab && tabsList.includes(currentTab)) {
+                const tabCategory = (data.categories || {})[currentTab] || '';
+                // 如果当前 tab 的分类与当前选中的分类匹配，或者没有选中分类
+                if (!currentCategory || tabCategory === currentCategory || currentCategory === '') {
+                    setActiveTab(currentTab);
+                    // 确保缓存正确
+                    try {
+                        localStorage.setItem(CACHE_ACTIVE_TAB, currentTab);
+                    } catch {}
+                    return; // 提前返回，保持当前状态
+                }
+            }
+            
+            // 只有在当前 tab 无效或分类不匹配时才重新选择
+            const cachedTab = localStorage.getItem(CACHE_ACTIVE_TAB);
+            const cachedCategory = localStorage.getItem(CACHE_ACTIVE_CATEGORY) || '';
+            
+            if (cachedCategory) {
+                const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === cachedCategory);
+                if (tabsInCategory.length > 0) {
+                    // 尝试恢复缓存的 tab
+                    if (cachedTab && tabsInCategory.includes(cachedTab)) {
+                        setActiveTab(cachedTab);
+                    } else {
+                        setActiveTab(tabsInCategory[0]);
                     }
-                    const cachedTab = localStorage.getItem(CACHE_ACTIVE_TAB);
-                    const cachedCategory = localStorage.getItem(CACHE_ACTIVE_CATEGORY) || '';
-                    
-                    if (cachedCategory) {
-                        const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === cachedCategory);
-                        if (tabsInCategory.length > 0) {
-                            setActiveCategory(cachedCategory);
-                        } else {
-                            setActiveCategory('');
-                            localStorage.removeItem(CACHE_ACTIVE_CATEGORY);
-                        }
-                    }
-                    
-                    if (cachedTab && tabsList.includes(cachedTab)) {
-                        const tabCategory = (data.categories || {})[cachedTab] || '';
-                        if (activeCategory && tabCategory !== activeCategory) {
-                            const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === activeCategory);
-                            if (tabsInCategory.length > 0) {
-                                setActiveTab(tabsInCategory[0]);
-                            } else {
-                                setActiveTab(tabsList[0] || '');
-                            }
-                        } else {
-                            setActiveTab(cachedTab);
-                        }
-                    } else if (tabsList.length > 0) {
-                        const tabsInCategory = tabsList.filter(tab => (data.categories || {})[tab] === activeCategory);
-                        setActiveTab(tabsInCategory.length > 0 ? tabsInCategory[0] : tabsList[0]);
-                    }
-                    if (data.isGuest !== undefined) {
-                        isGuest = data.isGuest;
-                    }
-                })
-                .catch(e => {});
-        }, [activeCategory]);
+                    setActiveCategory(cachedCategory);
+                    return;
+                }
+            }
+            
+            // 最终 fallback：选择第一个
+            if (tabsList.length > 0) {
+                setActiveTab(tabsList[0]);
+            }
+            // === 修复结束 ===
+            
+            if (data.isGuest !== undefined) {
+                isGuest = data.isGuest;
+            }
+        })
+        .catch(e => {});
+}, [activeCategory]);
 
         const loadNotes = useCallback(async (tab, append = false) => {
             if (!tab) return;
