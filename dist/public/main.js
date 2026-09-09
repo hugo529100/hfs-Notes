@@ -2223,24 +2223,44 @@
             doSend();
         }, [sanitizeText, editingNoteTs]);
 
-        const handleEdit = useCallback((ts, newText) => {
-            const doEdit = async () => {
-                try {
-                    const sanitizedText = sanitizeText(newText);
-                    if (!sanitizedText) return;
+        // ===== 簡化版本 =====
+const handleEdit = useCallback((ts, newText) => {
+    const doEdit = async () => {
+        try {
+            const sanitizedText = sanitizeText(newText);
+            if (!sanitizedText) return;
 
-                    const res = await fetch('/~/api/notes/update', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ ts, tab: activeTab, m: sanitizedText })
-                    });
-                    if (!res.ok) {
-                        HFS.toast('Failed to update note', 'error');
+            const res = await fetch('/~/api/notes/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ts, tab: activeTab, m: sanitizedText })
+            });
+            if (!res.ok) {
+                HFS.toast('Failed to update note', 'error');
+            } else {
+                // ===== 修復：模擬切換 tab 刷新列表 =====
+                const currentTab = activeTabRef.current || activeTab;
+                if (currentTab && filteredTabs.length > 1) {
+                    const currentIndex = filteredTabs.indexOf(currentTab);
+                    if (currentIndex !== -1) {
+                        const nextTab = filteredTabs[(currentIndex + 1) % filteredTabs.length];
+                        if (nextTab) {
+                            setActiveTab(nextTab);
+                            setTimeout(() => {
+                                setActiveTab(currentTab);
+                                try {
+                                    localStorage.setItem(CACHE_ACTIVE_TAB, currentTab);
+                                } catch {}
+                            }, 50);
+                        }
                     }
-                } catch (e) {}
-            };
-            doEdit();
-        }, [activeTab, sanitizeText]);
+                }
+                // ===== 修復結束 =====
+            }
+        } catch (e) {}
+    };
+    doEdit();
+}, [activeTab, sanitizeText, filteredTabs]);
 
         const handleToggleStar = useCallback((ts) => {
             fetch('/~/api/notes/toggle-star', {
