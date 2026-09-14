@@ -172,11 +172,20 @@
         const [loadingFull, setLoadingFull] = useState(false);
         const [isContentFullyLoaded, setIsContentFullyLoaded] = useState(initialFullContent !== null);
 
+        // ===== iPad 双击支持 refs =====
+        const lastTapRef = useRef(0);
+        const tapTimerRef = useRef(null);
+
         const isAdminUser = username === 'admin';
         const isOwner = username && (isAdminUser || username === u);
         const currentGuest = isGuest;
         const effectiveTab = tabName || activeTab;
         const effectiveCollapsed = localCollapsed !== null ? localCollapsed : (collapsed || false);
+
+        // ===== 游客可下载判断 =====
+        const canGuestDownload = currentGuest &&
+            Array.isArray(publicTabsList) &&
+            publicTabsList.includes(effectiveTab);
 
         useEffect(() => {
             if (isEditingThis && !editing) {
@@ -256,6 +265,16 @@
                 }
             };
         }, [editing, ts, effectiveTab, editVal]);
+
+        // ===== 清理触摸定时器 =====
+        useEffect(() => {
+            return () => {
+                if (tapTimerRef.current) {
+                    clearTimeout(tapTimerRef.current);
+                    tapTimerRef.current = null;
+                }
+            };
+        }, []);
 
         const mediaThumbPaths = useMemo(() => {
             const paths = {};
@@ -365,6 +384,39 @@
                 loadFullContentForEdit();
             }
         };
+
+        // ===== iPad 双击编辑支持 =====
+        const handleTouchEnd = useCallback((e) => {
+            // 只在触屏设备上处理
+            if (!('ontouchstart' in window)) return;
+            if (isFullscreenColumn) return;
+            if (!(isOwner && !currentGuest)) return;
+
+            // 排除交互元素
+            const target = e.target;
+            if (target.closest('button, a, input, textarea, audio, video, .note-inline-img, .note-cover-image')) {
+                return;
+            }
+
+            const now = Date.now();
+            const DOUBLE_TAP_DELAY = 300;
+
+            if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
+                if (tapTimerRef.current) {
+                    clearTimeout(tapTimerRef.current);
+                    tapTimerRef.current = null;
+                }
+                lastTapRef.current = 0;
+                e.preventDefault();
+                loadFullContentForEdit();
+            } else {
+                lastTapRef.current = now;
+                if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+                tapTimerRef.current = setTimeout(() => {
+                    tapTimerRef.current = null;
+                }, DOUBLE_TAP_DELAY);
+            }
+        }, [isFullscreenColumn, isOwner, currentGuest, loadFullContentForEdit]);
 
         const handleSave = () => {
             const trimmed = editVal.trim();
@@ -676,7 +728,7 @@
                                                     div.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;background:var(--bg);color:var(--text);';
                                                     const span1 = document.createElement('span');
                                                     span1.style.cssText = 'font-size:48px;';
-                                                    span1.textContent = '\u25B6';
+                                                    span1.textContent = '\u25B6\uFE0E';
                                                     const span2 = document.createElement('span');
                                                     span2.style.cssText = 'margin-top:8px;font-size:14px;';
                                                     span2.textContent = displayName;
@@ -691,12 +743,12 @@
                                     h('div', {
                                         className: 'note-mov-placeholder'
                                     },
-                                        h('span', { className: 'note-mov-play-icon' }, '\u25B6'),
+                                        h('span', { className: 'note-mov-play-icon' }, '\u25B6\uFE0E'),
                                         h('span', { className: 'note-mov-placeholder-text' }, displayName)
                                     ),
                                 h('div', { className: 'note-mov-thumb-overlay' },
                                     h('div', { className: 'note-mov-placeholder-bg' },
-                                        h('span', { className: 'note-mov-play-icon' }, '\u25B6')
+                                        h('span', { className: 'note-mov-play-icon' }, '\u25B6\uFE0E')
                                     ),
                                     h('div', { className: 'note-mov-placeholder-info' },
                                         h('span', { className: 'note-mov-placeholder-text' }, 'Click to play video')
@@ -733,7 +785,8 @@
                     const handleDownload = (e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        if (currentGuest) {
+                        // ===== 游客下载权限：公开 tab 允许下载 =====
+                        if (currentGuest && !canGuestDownload) {
                             HFS.toast('Please login to download files', 'info');
                             return;
                         }
@@ -748,12 +801,12 @@
                     };
 
                     return h('span', { key: `att-${i}`, className: 'note-inline-att' },
-                        h('span', { className: 'note-att-icon' }, '\u2B07'),
+                        h('span', { className: 'note-att-icon' }, '\u2B07\uFE0E'),
                         h('a', {
                             href: '#',
                             onClick: handleDownload,
                             className: 'note-att-link',
-                            title: `Download: ${displayName}`
+                            title: (currentGuest && !canGuestDownload) ? 'Login to download' : `Download: ${displayName}`
                         }, displayName)
                     );
                 }
@@ -832,7 +885,7 @@
                                             }),
                                             h('div', { className: 'note-mov-thumb-overlay' },
                                                 h('div', { className: 'note-mov-placeholder-bg' },
-                                                    h('span', { className: 'note-mov-play-icon' }, '\u25B6')
+                                                    h('span', { className: 'note-mov-play-icon' }, '\u25B6\uFE0E')
                                                 ),
                                                 h('div', { className: 'note-mov-placeholder-info' },
                                                     h('span', { className: 'note-mov-placeholder-text' }, 'Click to play video'),
@@ -848,7 +901,7 @@
                                             style: { display: 'none' }
                                         },
                                             h('div', { className: 'note-mov-placeholder-bg' },
-                                                h('span', { className: 'note-mov-play-icon' }, '\u25B6')
+                                                h('span', { className: 'note-mov-play-icon' }, '\u25B6\uFE0E')
                                             ),
                                             h('div', { className: 'note-mov-placeholder-info' },
                                                 h('span', { className: 'note-mov-placeholder-text' }, 'Click to play video'),
@@ -1104,6 +1157,7 @@
         return h('div', {
             className: `note-item ${starred ? 'note-item-starred' : ''} ${isCollapsed && coverImageId ? 'note-item-has-cover' : ''} ${isFullscreenColumn ? 'note-item-compact' : ''} ${isVisible ? 'note-item-visible' : ''}`,
             onDblClick: handleDblClick,
+            onTouchEnd: handleTouchEnd,
             ref: noteItemRef,
             'data-note-ts': ts,
             style: { fontSize: fontSize + 'px' }
@@ -1123,7 +1177,7 @@
                         className: 'note-collapse-btn',
                         onClick: handleCollapseToggle,
                         title: isCollapsed ? 'Expand note' : 'Collapse note'
-                    }, isCollapsed ? '\u25B6' : '\u25BC'),
+                    }, isCollapsed ? '\u25B6\uFE0E' : '\u25BC\uFE0E'),
                     canManage && h('button', {
                         className: 'note-delete-btn',
                         onClick: handleDeleteClick,
@@ -3395,7 +3449,7 @@ const handleEdit = useCallback((ts, newText) => {
                                     },
                                     disabled: idx >= categoryList.length - 1,
                                     title: 'Move right'
-                                }, '\u25B6')
+                                }, '\u25B6\uFE0E')
                             )
                         ]);
                     })
@@ -3505,7 +3559,7 @@ const handleEdit = useCallback((ts, newText) => {
                                         },
                                         disabled: idx >= categoryList.length - 1,
                                         title: 'Move right'
-                                    }, '\u25B6')
+                                    }, '\u25B6\uFE0E')
                                 )
                             ]);
                         })
@@ -3595,7 +3649,7 @@ const handleEdit = useCallback((ts, newText) => {
                         className: 'note-search-nav-btn',
                         onClick: goToNextMatch,
                         title: 'Next'
-                    }, '\u25BC')
+                    }, '\u25BC\uFE0E')
                 )
             ),
             // Tab容器 - 编辑模式下隐藏
@@ -3642,7 +3696,7 @@ const handleEdit = useCallback((ts, newText) => {
                         },
                         disabled: filteredTabs.indexOf(activeTab) >= filteredTabs.length - 1,
                         title: 'Move right'
-                    }, '\u25B6')
+                    }, '\u25B6\uFE0E')
                 )
             ),
             isFullscreen ?
