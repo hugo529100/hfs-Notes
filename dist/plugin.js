@@ -5,8 +5,29 @@ exports.apiRequired = 8.87
 exports.repo = "Hug3O/Notes"
 exports.frontend_js = ['main.js']
 exports.frontend_css = ['style.css']
+
 exports.config = {
+    // ============================================
+    // === Configuration Group Selector ===
+    // ============================================
+    config_tab: {
+        type: 'select',
+        defaultValue: 'tabs',
+        options: {
+            '1. Tabs & Access': 'tabs',
+            '2. Backup & Export': 'backup',
+            '3. Thumbnails': 'thumbnails'
+        },
+        label: "Configuration Category",
+        helperText: "Select a category to view and edit settings.",
+        frontend: true
+    },
+
+    // ============================================
+    // === 1. Tabs & Access ===
+    // ============================================
     tabList: {
+        showIf: x => x.config_tab === 'tabs',
         type: 'array',
         label: 'Tab List',
         fields: {
@@ -28,6 +49,7 @@ exports.config = {
         frontend: true
     },
     restrictUsers: {
+        showIf: x => x.config_tab === 'tabs',
         type: 'boolean',
         label: 'Restrict user access',
         helperText: 'When enabled, only selected users below can access notes. When disabled, all logged-in users can access.',
@@ -35,33 +57,45 @@ exports.config = {
         frontend: true
     },
     allowedUsers: {
+        showIf: x => x.config_tab === 'tabs' && x.restrictUsers,
         type: 'username',
         multiple: true,
         label: 'Allowed users',
         helperText: 'Only applies when "Restrict user access" is enabled above.',
-        showIf: x => x.restrictUsers,
         frontend: true
     },
+
+    // ============================================
+    // === 2. Backup & Export ===
+    // ============================================
     backupInterval: {
+        showIf: x => x.config_tab === 'backup',
         type: 'number',
         label: 'Auto Backup Interval (hours)',
         defaultValue: 6,
         helperText: 'How often to backup notes database (0 to disable)'
     },
     backupRetentionDays: {
+        showIf: x => x.config_tab === 'backup',
         type: 'number',
         label: 'Backup Retention Days',
         defaultValue: 3,
         helperText: 'How many days to keep backup files'
     },
     autoExportTxt: {
+        showIf: x => x.config_tab === 'backup',
         type: 'boolean',
         label: 'Auto Export TXT',
         helperText: 'When enabled, automatically export notes as individual TXT files (each note as separate file, organized by tab folders) alongside each backup.',
         defaultValue: false,
         frontend: true
     },
+
+    // ============================================
+    // === 3. Thumbnails ===
+    // ============================================
     useSharpPlugin: {
+        showIf: x => x.config_tab === 'thumbnails',
         type: 'boolean',
         defaultValue: true,
         label: 'Use Sharp plugin for thumbnails',
@@ -69,6 +103,7 @@ exports.config = {
         frontend: true
     },
     thumbQuality: {
+        showIf: x => x.config_tab === 'thumbnails',
         type: 'number',
         defaultValue: 70,
         min: 1,
@@ -78,6 +113,7 @@ exports.config = {
         xs: 6
     },
     thumbPixels: {
+        showIf: x => x.config_tab === 'thumbnails',
         type: 'number',
         defaultValue: 800,
         min: 50,
@@ -87,21 +123,15 @@ exports.config = {
         xs: 6
     },
     ffmpeg_path: {
+        showIf: x => x.config_tab === 'thumbnails',
         type: 'real_path',
         fileMask: 'ffmpeg*',
         defaultValue: 'ffmpeg.exe',
         helperText: 'Path to FFmpeg executable. Leave empty if it\'s in the system path. Used for video thumbnail extraction.',
         xs: 6
     },
-    thumbnail_time: {
-        type: 'string',
-        defaultValue: '00:00:05',
-        label: 'JPG thumbnail time position',
-        helperText: 'Time position for JPG thumbnail extraction (HH:MM:SS)',
-        showIf: x => x.thumbnail_format === 'jpg',
-        xs: 6
-    },
     thumbnail_format: {
+        showIf: x => x.config_tab === 'thumbnails',
         type: 'select',
         label: 'Video thumbnail format',
         defaultValue: 'jpg',
@@ -112,108 +142,116 @@ exports.config = {
         helperText: 'Select output format for video thumbnails',
         xs: 6
     },
+    thumbnail_time: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'jpg',
+        type: 'string',
+        defaultValue: '00:00:05',
+        label: 'JPG thumbnail time position',
+        helperText: 'Time position for JPG thumbnail extraction (HH:MM:SS)',
+        xs: 6
+    },
     gif_width: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 100,
         max: 800,
         defaultValue: 320,
         label: 'GIF width (pixels)',
         helperText: 'Width of output GIF (height auto-scaled)',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     video_size_threshold: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         defaultValue: 25,
         min: 1,
         max: 100000,
         label: 'Video size threshold (MB)',
         helperText: 'Videos larger than this will use long video settings',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     short_video_start_time: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'string',
         defaultValue: '00:01:00',
         label: 'Short video start time (HH:MM:SS)',
         helperText: 'Start time for short videos (<= threshold)',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 12
     },
     short_video_duration: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 1,
         max: 60,
         defaultValue: 12,
         label: 'Short video GIF duration (seconds)',
         helperText: 'Duration of GIF for short videos',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     short_video_fps: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 1,
         max: 30,
         defaultValue: 6,
         label: 'Short video GIF FPS',
         helperText: 'Frames per second for short videos',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     long_video_start_time: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'string',
         defaultValue: '00:3:00',
         label: 'Long video start time (HH:MM:SS)',
         helperText: 'Start time for long videos (> threshold)',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 12
     },
     long_video_duration: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 1,
         max: 60,
         defaultValue: 12,
         label: 'Long video GIF duration (seconds)',
         helperText: 'Duration of GIF for long videos',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     long_video_fps: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 1,
         max: 30,
         defaultValue: 6,
         label: 'Long video GIF FPS',
         helperText: 'Frames per second for long videos',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     backup_video_start_time: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'string',
         defaultValue: '00:00:00',
         label: 'Backup video start time (HH:MM:SS)',
         helperText: 'Fallback start time when other settings fail',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 12
     },
     backup_video_duration: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 1,
         max: 60,
         defaultValue: 6,
         label: 'Backup video GIF duration (seconds)',
         helperText: 'Duration of GIF for backup mode',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     },
     backup_video_fps: {
+        showIf: x => x.config_tab === 'thumbnails' && x.thumbnail_format === 'gif',
         type: 'number',
         min: 1,
         max: 30,
         defaultValue: 6,
         label: 'Backup video GIF FPS',
         helperText: 'Frames per second for backup mode',
-        showIf: x => x.thumbnail_format === 'gif',
         xs: 6
     }
 }
