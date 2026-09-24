@@ -2189,3 +2189,25 @@
         padding: 4px 8px;
     }
 }
+
+/* ============================================
+   pending 占位笔记
+   ============================================ */
+
+.note-item.note-item-pending {
+    opacity: 1 !important;
+    transform: none !important;
+    border-style: dashed;
+    border-color: var(--faint-contrast);
+}
+
+.note-item.note-item-pending .note-text,
+.note-item.note-item-pending .note-pending-text {
+    animation: pulse 1.4s ease-in-out infinite;
+    color: var(--text);
+}
+
+.note-item.note-item-pending .note-header-row {
+    opacity: 0.7;
+}
+

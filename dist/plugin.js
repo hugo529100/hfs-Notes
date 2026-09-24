@@ -1,4 +1,4 @@
-exports.version = 4.5
+exports.version = 4.7
 exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
@@ -7,9 +7,6 @@ exports.frontend_js = ['main.js']
 exports.frontend_css = ['style.css']
 
 exports.config = {
-    // ============================================
-    // === Configuration Group Selector ===
-    // ============================================
     config_tab: {
         type: 'select',
         defaultValue: 'tabs',
@@ -23,9 +20,6 @@ exports.config = {
         frontend: true
     },
 
-    // ============================================
-    // === 1. Tabs & Access ===
-    // ============================================
     tabList: {
         showIf: x => x.config_tab === 'tabs',
         type: 'array',
@@ -65,9 +59,6 @@ exports.config = {
         frontend: true
     },
 
-    // ============================================
-    // === 2. Backup & Export ===
-    // ============================================
     backupInterval: {
         showIf: x => x.config_tab === 'backup',
         type: 'number',
@@ -91,9 +82,6 @@ exports.config = {
         frontend: true
     },
 
-    // ============================================
-    // === 3. Thumbnails ===
-    // ============================================
     useSharpPlugin: {
         showIf: x => x.config_tab === 'thumbnails',
         type: 'boolean',
@@ -263,11 +251,13 @@ exports.init = async api => {
     const path = api.require('path')
     const crypto = api.require('crypto')
     const { spawn } = api.require('child_process')
+    const http = api.require('http')
+    const https = api.require('https')
     const storage = api.storageDir
-    
+
     const API_BASE = `${api.Const.API_URI}notes/`
     const ADMIN_API = `${API_BASE}admin/`
-    
+
     const TABS_DIR = path.join(storage, 'tabs')
     const IMG_BASE_DIR = path.join(storage, 'img')
     const MOV_BASE_DIR = path.join(storage, 'mov')
@@ -277,21 +267,25 @@ exports.init = async api => {
     const BACKUP_DIR = path.join(storage, 'backup')
     const TABS_MAP_FILE = path.join(TABS_DIR, '_tabs_map.json')
 
-const SPAM_DELAY = 1000
-const MAX_STORAGE_WARNING = 400
-const MAX_IMG_SIZE = 80 * 1024 * 1024
-const MAX_FILE_SIZE = 200 * 1024 * 1024
-const TEMP_FILE_TTL = 60 * 1000
-const THUMB_QUALITY = 70
-const PAGE_SIZE = 10
-const SUMMARY_LENGTH = 250
+    const SPAM_DELAY = 1000
+    const MAX_STORAGE_WARNING = 400
+    const MAX_IMG_SIZE = 80 * 1024 * 1024
+    const MAX_FILE_SIZE = 200 * 1024 * 1024
+    const TEMP_FILE_TTL = 60 * 1000
+    const THUMB_QUALITY = 70
+    const PAGE_SIZE = 10
+    const SUMMARY_LENGTH = 250
+
+    const DOWNLOAD_TIMEOUT = 15000
+    const MAX_CONCURRENT_DOWNLOADS = 3
+    const MAX_LOCALIZE_TOTAL = 50
 
     let backupTimer = null
     let midnightCleanupTimer = null
     let isBackupRunning = false
-    
+
     const throttleDb = api.openDb('notes_throttle', { rewriteLater: true })
-    
+
     await fs.mkdir(TABS_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(IMG_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(MOV_BASE_DIR, { recursive: true }).catch(() => {})
@@ -304,79 +298,79 @@ const SUMMARY_LENGTH = 250
         await fs.stat(TABS_MAP_FILE)
     } catch {
         const tabs = getTabs()
-        await fs.writeFile(TABS_MAP_FILE, JSON.stringify({ 
-            order: tabs, 
-            names: {}, 
+        await fs.writeFile(TABS_MAP_FILE, JSON.stringify({
+            order: tabs,
+            names: {},
             categories: {},
             categoryOrder: [],
             categoryNames: {}
         }, null, 2))
     }
 
-async function syncTabsMapWithConfig() {
-    const tabsMap = await loadTabsMap()
-    const configTabs = getTabsWithCategory()
-    let needsSave = false
+    async function syncTabsMapWithConfig() {
+        const tabsMap = await loadTabsMap()
+        const configTabs = getTabsWithCategory()
+        let needsSave = false
 
-    const configSet = new Set(configTabs.map(t => t.name))
-    const validExistingOrder = (tabsMap.order || []).filter(t => configSet.has(t))
-    
-    const existingSet = new Set(validExistingOrder)
-    const newTabs = configTabs.filter(t => !existingSet.has(t.name)).map(t => t.name)
-    
-    const newOrder = [...validExistingOrder, ...newTabs]
-    
-    if (newOrder.length !== (tabsMap.order || []).length || 
-        newOrder.some((t, i) => t !== (tabsMap.order || [])[i])) {
-        tabsMap.order = newOrder
-        needsSave = true
-    }
-    
-    for (const tab of Object.keys(tabsMap.categories || {})) {
-        if (!configSet.has(tab)) {
-            delete tabsMap.categories[tab]
+        const configSet = new Set(configTabs.map(t => t.name))
+        const validExistingOrder = (tabsMap.order || []).filter(t => configSet.has(t))
+
+        const existingSet = new Set(validExistingOrder)
+        const newTabs = configTabs.filter(t => !existingSet.has(t.name)).map(t => t.name)
+
+        const newOrder = [...validExistingOrder, ...newTabs]
+
+        if (newOrder.length !== (tabsMap.order || []).length ||
+            newOrder.some((t, i) => t !== (tabsMap.order || [])[i])) {
+            tabsMap.order = newOrder
             needsSave = true
         }
-    }
-    
-    for (const tabConfig of configTabs) {
-        if (tabConfig.category !== undefined && tabConfig.category !== null) {
-            const currentCat = tabsMap.categories?.[tabConfig.name]
-            if (currentCat !== tabConfig.category) {
-                if (!tabsMap.categories) tabsMap.categories = {}
-                tabsMap.categories[tabConfig.name] = tabConfig.category || ''
+
+        for (const tab of Object.keys(tabsMap.categories || {})) {
+            if (!configSet.has(tab)) {
+                delete tabsMap.categories[tab]
                 needsSave = true
             }
         }
-    }
-    
-    const existingCategories = new Set(Object.values(tabsMap.categories || {}).filter(Boolean))
-    const validCategoryOrder = (tabsMap.categoryOrder || []).filter(cat => existingCategories.has(cat))
-    if (validCategoryOrder.length !== (tabsMap.categoryOrder || []).length) {
-        tabsMap.categoryOrder = validCategoryOrder
-        needsSave = true
-    }
-    
-    for (const cat of Object.keys(tabsMap.categoryNames || {})) {
-        if (!existingCategories.has(cat)) {
-            delete tabsMap.categoryNames[cat]
+
+        for (const tabConfig of configTabs) {
+            if (tabConfig.category !== undefined && tabConfig.category !== null) {
+                const currentCat = tabsMap.categories?.[tabConfig.name]
+                if (currentCat !== tabConfig.category) {
+                    if (!tabsMap.categories) tabsMap.categories = {}
+                    tabsMap.categories[tabConfig.name] = tabConfig.category || ''
+                    needsSave = true
+                }
+            }
+        }
+
+        const existingCategories = new Set(Object.values(tabsMap.categories || {}).filter(Boolean))
+        const validCategoryOrder = (tabsMap.categoryOrder || []).filter(cat => existingCategories.has(cat))
+        if (validCategoryOrder.length !== (tabsMap.categoryOrder || []).length) {
+            tabsMap.categoryOrder = validCategoryOrder
             needsSave = true
         }
-    }
-    
-    for (const tabName of Object.keys(tabsMap.names || {})) {
-        if (!configSet.has(tabName)) {
-            delete tabsMap.names[tabName]
-            needsSave = true
+
+        for (const cat of Object.keys(tabsMap.categoryNames || {})) {
+            if (!existingCategories.has(cat)) {
+                delete tabsMap.categoryNames[cat]
+                needsSave = true
+            }
         }
+
+        for (const tabName of Object.keys(tabsMap.names || {})) {
+            if (!configSet.has(tabName)) {
+                delete tabsMap.names[tabName]
+                needsSave = true
+            }
+        }
+
+        if (needsSave) {
+            await saveTabsMap(tabsMap)
+        }
+
+        return tabsMap
     }
-    
-    if (needsSave) {
-        await saveTabsMap(tabsMap)
-    }
-    
-    return tabsMap
-}
 
     function sanitizeForDb(text) {
         if (!text || typeof text !== 'string') return ''
@@ -393,7 +387,7 @@ async function syncTabsMapWithConfig() {
             .replace(/[\u2028\u2029]/g, '\n')
             .normalize('NFC')
     }
-    
+
     function getTabPublicConfig(tab) {
         if (!tab) return false
         const list = api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }]
@@ -446,19 +440,23 @@ async function syncTabsMapWithConfig() {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
     }
 
-function generateFileId(originalName) {
-    const now = new Date()
-    const dateStr = now.getFullYear() +
-        String(now.getMonth() + 1).padStart(2, '0') +
-        String(now.getDate()).padStart(2, '0') +
-        String(now.getHours()).padStart(2, '0') +
-        String(now.getMinutes()).padStart(2, '0') +
-        String(now.getSeconds()).padStart(2, '0')
-    const rand = crypto.randomBytes(3).toString('hex')
-    const ext = path.extname(originalName) || ''
-    const baseName = path.basename(originalName, ext)
-    return `${dateStr}_${rand}_${baseName}${ext}`
-}
+    // ============================================
+    // 修正：把 % 替换为 _，避免 decodeURIComponent 抛错
+    // ============================================
+    function generateFileId(originalName) {
+        const now = new Date()
+        const dateStr = now.getFullYear() +
+            String(now.getMonth() + 1).padStart(2, '0') +
+            String(now.getDate()).padStart(2, '0') +
+            String(now.getHours()).padStart(2, '0') +
+            String(now.getMinutes()).padStart(2, '0') +
+            String(now.getSeconds()).padStart(2, '0')
+        const rand = crypto.randomBytes(3).toString('hex')
+        const ext = path.extname(originalName) || ''
+        let baseName = path.basename(originalName, ext)
+        baseName = baseName.replace(/%/g, '_')
+        return `${dateStr}_${rand}_${baseName}${ext}`
+    }
 
     function getTabDir(tab) {
         const safeTab = tab.replace(/[\\/:*?"<>|]/g, '_')
@@ -635,27 +633,27 @@ function generateFileId(originalName) {
         await fs.writeFile(mapPath, JSON.stringify(nameMap))
     }
 
-async function getFileName(tab, type, fileId) {
-    const mapPath = getNameMapPath(tab, type)
-    try {
-        const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
-        if (nameMap[fileId]) return nameMap[fileId]
-    } catch {}
-    
-    try {
-        const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
-        const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
-        if (tempNameMap[fileId]) return tempNameMap[fileId]
-    } catch {}
-    
-    const parts = fileId.split('_')
-    if (parts.length >= 3) {
-        const originalParts = parts.slice(2)
-        const originalName = originalParts.join('_')
-        return originalName
+    async function getFileName(tab, type, fileId) {
+        const mapPath = getNameMapPath(tab, type)
+        try {
+            const nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+            if (nameMap[fileId]) return nameMap[fileId]
+        } catch {}
+
+        try {
+            const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+            const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+            if (tempNameMap[fileId]) return tempNameMap[fileId]
+        } catch {}
+
+        const parts = fileId.split('_')
+        if (parts.length >= 3) {
+            const originalParts = parts.slice(2)
+            const originalName = originalParts.join('_')
+            return originalName
+        }
+        return fileId
     }
-    return fileId
-}
 
     async function cleanFileNameMapping(tab, type, removedIds) {
         if (removedIds.length === 0) return
@@ -726,7 +724,7 @@ async function getFileName(tab, type, fileId) {
 
     function getGradientParams() {
         const gifWidth = api.getConfig('gif_width') || 320
-        
+
         return {
             SHORT: {
                 startTime: parseTimeToSeconds(api.getConfig('short_video_start_time') || '00:03:00'),
@@ -754,9 +752,9 @@ async function getFileName(tab, type, fileId) {
         const duration = params.duration
         const fps = params.fps
         const width = params.width
-        
+
         const palettePath = outputPath.replace(/\.gif$/i, '_palette.png')
-        
+
         const paletteArgs = [
             '-ss', formatTimeFromSeconds(startTime),
             '-t', '5',
@@ -764,7 +762,7 @@ async function getFileName(tab, type, fileId) {
             '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,palettegen`,
             '-y', palettePath
         ]
-        
+
         await new Promise(resolve => {
             const paletteProc = spawn(api.getConfig('ffmpeg_path') || 'ffmpeg', paletteArgs)
             paletteProc.on('exit', code => {
@@ -779,7 +777,7 @@ async function getFileName(tab, type, fileId) {
             })
             paletteProc.stderr?.on('data', () => {})
         })
-        
+
         const gifArgs = [
             '-ss', formatTimeFromSeconds(startTime),
             '-t', duration.toString(),
@@ -790,7 +788,7 @@ async function getFileName(tab, type, fileId) {
             '-f', 'gif',
             '-y', outputPath
         ]
-        
+
         return new Promise(resolve => {
             const gifProc = spawn(api.getConfig('ffmpeg_path') || 'ffmpeg', gifArgs)
             gifProc.stderr?.on('data', () => {})
@@ -825,10 +823,10 @@ async function getFileName(tab, type, fileId) {
         try {
             const quality = api.getConfig('thumbQuality') || THUMB_QUALITY
             const pixels = api.getConfig('thumbPixels') || 400
-            
+
             const sharpResults = api.customApiCall('sharp', imageBuffer)
             const sharp = sharpResults && sharpResults[0]
-            
+
             if (sharp) {
                 await sharp
                     .resize(pixels, pixels, { fit: 'inside', withoutEnlargement: true })
@@ -837,7 +835,7 @@ async function getFileName(tab, type, fileId) {
                     .toFile(outputPath)
                 return true
             }
-            
+
             try {
                 const sharpModule = api.require('sharp')
                 if (sharpModule) {
@@ -849,7 +847,7 @@ async function getFileName(tab, type, fileId) {
                     return true
                 }
             } catch (requireErr) {}
-            
+
             await fs.writeFile(outputPath, imageBuffer)
             return true
         } catch (e) {
@@ -879,18 +877,18 @@ async function getFileName(tab, type, fileId) {
         try {
             const ffmpegPath = api.getConfig('ffmpeg_path') || 'ffmpeg'
             const thumbFormat = api.getConfig('thumbnail_format') || 'jpg'
-            
+
             const thumbDir = await ensureDir(getTabThumbDir(tab))
             const ext = path.extname(fileId)
             const baseName = path.basename(fileId, ext)
             const thumbId = baseName + '.' + thumbFormat
             const thumbPath = path.join(thumbDir, thumbId)
-            
+
             try {
                 await fs.stat(thumbPath)
                 return true
             } catch {}
-            
+
             try {
                 const stats = await fs.stat(videoPath)
                 if (stats.size === 0) return false
@@ -906,21 +904,28 @@ async function getFileName(tab, type, fileId) {
                 } else {
                     timeInSeconds = parseInt(thumbTimeConfig) || 5
                 }
-                
+
                 return new Promise((resolve) => {
                     const timeOffsets = [0, 0.5, 1, 1.5, 2, 3, 5]
                     let maxAttempts = Math.min(timeOffsets.length, 5)
                     let success = false
-                    
+                    let finished = false
+
+                    const finish = (result) => {
+                        if (finished) return
+                        finished = true
+                        resolve(result)
+                    }
+
                     const tryExtract = (offsetIndex) => {
                         if (offsetIndex >= maxAttempts || success) {
-                            if (!success) resolve(false)
+                            if (!success) finish(false)
                             return
                         }
-                        
+
                         const offset = timeOffsets[offsetIndex] || 5
                         const timeStr = formatTimeFromSeconds(timeInSeconds + offset)
-                        
+
                         const ffmpeg = spawn(ffmpegPath, [
                             '-ss', timeStr,
                             '-i', videoPath,
@@ -929,43 +934,50 @@ async function getFileName(tab, type, fileId) {
                             '-f', 'image2',
                             '-y', thumbPath
                         ])
-                        
+
                         ffmpeg.stderr?.on('data', () => {})
-                        
+
+                        let retried = false
+                        const retryOnce = () => {
+                            if (retried || success) return
+                            retried = true
+                            tryExtract(offsetIndex + 1)
+                        }
+
                         ffmpeg.on('exit', (code) => {
                             if (code === 0) {
                                 fs.stat(thumbPath).then(() => {
                                     success = true
-                                    resolve(true)
+                                    finish(true)
                                 }).catch(() => {
-                                    tryExtract(offsetIndex + 1)
+                                    retryOnce()
                                 })
                             } else {
-                                tryExtract(offsetIndex + 1)
+                                retryOnce()
                             }
                         })
-                        
+
                         ffmpeg.on('error', () => {
-                            tryExtract(offsetIndex + 1)
+                            retryOnce()
                         })
-                        
+
                         setTimeout(() => {
-                            tryExtract(offsetIndex + 1)
+                            retryOnce()
                         }, 5000)
                     }
-                    
+
                     tryExtract(0)
                 })
             } else {
                 const stats = await fs.stat(videoPath)
                 const fileSizeMB = stats.size / (1024 * 1024)
-                
+
                 const gradientParams = getGradientParams()
                 const threshold = api.getConfig('video_size_threshold') || 250
                 const isLongVideo = fileSizeMB > threshold
-                
+
                 let success = false
-                
+
                 if (isLongVideo) {
                     success = await generateGifWithParams(videoPath, thumbPath, gradientParams.LONG)
                     if (!success) {
@@ -974,15 +986,15 @@ async function getFileName(tab, type, fileId) {
                 } else {
                     success = await generateGifWithParams(videoPath, thumbPath, gradientParams.SHORT)
                 }
-                
+
                 if (!success) {
                     success = await generateGifWithParams(videoPath, thumbPath, gradientParams.BACKUP)
                 }
-                
+
                 if (!success) {
                     try { await fs.unlink(thumbPath) } catch {}
                 }
-                
+
                 return success
             }
         } catch (e) {
@@ -1004,10 +1016,10 @@ async function getFileName(tab, type, fileId) {
 
     function hasThumbnail(tab, mediaId) {
         const thumbDir = getTabThumbDir(tab)
-        
+
         let thumbPath = path.join(thumbDir, mediaId)
         if (fss.existsSync(thumbPath)) return true
-        
+
         const ext = path.extname(mediaId)
         if (['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv', '.flv'].includes(ext.toLowerCase())) {
             const baseName = path.basename(mediaId, ext)
@@ -1016,64 +1028,69 @@ async function getFileName(tab, type, fileId) {
             thumbPath = path.join(thumbDir, baseName + '.gif')
             if (fss.existsSync(thumbPath)) return true
         }
-        
+
         return false
     }
 
-async function promoteFileFromTemp(fileId, targetDir) {
-    const tempPath = getTempPath(fileId)
-    await ensureDir(targetDir)
-    const finalPath = path.join(targetDir, fileId)
-    
-    try {
-        await fs.stat(tempPath)
-        await fs.copyFile(tempPath, finalPath)
-        
-        const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+    async function promoteFileFromTemp(fileId, targetDir) {
+        const tempPath = getTempPath(fileId)
+        await ensureDir(targetDir)
+        const finalPath = path.join(targetDir, fileId)
+
         try {
-            const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
-            if (tempNameMap[fileId]) {
-                const mapPath = path.join(targetDir, '.filenames')
-                let nameMap = {}
-                try {
-                    nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
-                } catch {}
-                nameMap[fileId] = tempNameMap[fileId]
-                await fs.writeFile(mapPath, JSON.stringify(nameMap))
-            }
-        } catch {}
-        return true
-    } catch {
-        return false
-    }
-}
+            await fs.stat(tempPath)
+            await fs.copyFile(tempPath, finalPath)
 
-async function promoteImageFromTemp(imageId, tab) {
-    const imgDir = getTabImgDir(tab)
-    const thumbDir = getTabThumbDir(tab)
-    const tempPath = getTempPath(imageId)
-    const finalPath = path.join(imgDir, imageId)
-    const thumbPath = path.join(thumbDir, imageId)
-    
-    try {
-        await fs.stat(tempPath)
-        await ensureDir(imgDir)
-        await ensureDir(thumbDir)
-        
-        const imgBuffer = await fs.readFile(tempPath)
-        await generateThumbnail(imgBuffer, thumbPath)
-        await fs.copyFile(tempPath, finalPath)
-        return true
-    } catch (e) {
-        return false
+            const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+            try {
+                const tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+                if (tempNameMap[fileId]) {
+                    const mapPath = path.join(targetDir, '.filenames')
+                    let nameMap = {}
+                    try {
+                        nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+                    } catch {}
+                    nameMap[fileId] = tempNameMap[fileId]
+                    await fs.writeFile(mapPath, JSON.stringify(nameMap))
+                }
+            } catch {}
+            return true
+        } catch {
+            return false
+        }
     }
-}
+
+    async function promoteImageFromTemp(imageId, tab) {
+        const imgDir = getTabImgDir(tab)
+        const thumbDir = getTabThumbDir(tab)
+        const tempPath = getTempPath(imageId)
+        const finalPath = path.join(imgDir, imageId)
+        const thumbPath = path.join(thumbDir, imageId)
+
+        try {
+            await fs.stat(tempPath)
+            await ensureDir(imgDir)
+            await ensureDir(thumbDir)
+
+            const imgBuffer = await fs.readFile(tempPath)
+            await generateThumbnail(imgBuffer, thumbPath)
+            await fs.copyFile(tempPath, finalPath)
+
+            // 修正：删除临时缩略图
+            const tempThumbPath = path.join(THUMB_BASE_DIR, '_temp', imageId)
+            fs.unlink(tempThumbPath).catch(() => {})
+
+            return true
+        } catch (e) {
+            return false
+        }
+    }
 
     async function promoteAllAttachments(content, tab) {
         const { img, mov, att } = extractAllAttachmentIds(content)
-        
+
         const promotePromises = []
-        
+
         for (const imgId of img) {
             promotePromises.push(
                 promoteImageFromTemp(imgId, tab).then(promoted => {
@@ -1086,7 +1103,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 })
             )
         }
-        
+
         for (const movId of mov) {
             const movDir = getTabMovDir(tab)
             promotePromises.push(
@@ -1102,7 +1119,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 })
             )
         }
-        
+
         for (const attId of att) {
             const attDir = getTabAttDir(tab)
             promotePromises.push(
@@ -1116,16 +1133,16 @@ async function promoteImageFromTemp(imageId, tab) {
                 })
             )
         }
-        
+
         await Promise.all(promotePromises)
     }
 
     async function deleteAttachmentAcrossAllTabs(fileId, fileType) {
         const tabs = getTabs()
         const deletePromises = []
-        
+
         deletePromises.push(fs.unlink(getTempPath(fileId)).catch(() => {}))
-        
+
         if (fileType === 'img') {
             for (const tab of tabs) {
                 const imgDir = getTabImgDir(tab)
@@ -1156,9 +1173,9 @@ async function promoteImageFromTemp(imageId, tab) {
                 deletePromises.push(fs.unlink(path.join(attDir, fileId)).catch(() => {}))
             }
         }
-        
+
         await Promise.all(deletePromises)
-        
+
         if (fileType === 'mov') {
             for (const tab of tabs) {
                 await cleanFileNameMapping(tab, 'mov', [fileId])
@@ -1170,13 +1187,29 @@ async function promoteImageFromTemp(imageId, tab) {
         }
     }
 
+    // ============================================
+    // 修正：同时清理 TEMP_DIR 和 THUMB_BASE_DIR/_temp
+    // ============================================
     async function cleanupTempFiles() {
         try {
             const cutoff = Date.now() - TEMP_FILE_TTL
             const files = await fs.readdir(TEMP_DIR).catch(() => [])
-            
+
             for (const file of files) {
                 const filePath = path.join(TEMP_DIR, file)
+                try {
+                    const stat = await fs.stat(filePath)
+                    if (stat.mtimeMs < cutoff) {
+                        await fs.unlink(filePath)
+                    }
+                } catch {}
+            }
+
+            // 清理临时缩略图
+            const tempThumbDir = path.join(THUMB_BASE_DIR, '_temp')
+            const thumbFiles = await fs.readdir(tempThumbDir).catch(() => [])
+            for (const file of thumbFiles) {
+                const filePath = path.join(tempThumbDir, file)
                 try {
                     const stat = await fs.stat(filePath)
                     if (stat.mtimeMs < cutoff) {
@@ -1192,24 +1225,24 @@ async function promoteImageFromTemp(imageId, tab) {
         const timestamp = getTimestamp()
         const backupFolder = path.join(BACKUP_DIR, timestamp)
         const backupTabsDir = path.join(backupFolder, 'tabs')
-        
+
         await fs.mkdir(backupTabsDir, { recursive: true }).catch(() => {})
-        
+
         let backedUpCount = 0
-        
+
         for (const tab of tabs) {
             try {
                 const tabDir = getTabDir(tab)
                 const backupTabDir = path.join(backupTabsDir, path.basename(tabDir))
-                
+
                 try {
                     await fs.stat(tabDir)
                 } catch {
                     continue
                 }
-                
+
                 await fs.mkdir(backupTabDir, { recursive: true }).catch(() => {})
-                
+
                 const files = await fs.readdir(tabDir)
                 for (const file of files) {
                     const srcPath = path.join(tabDir, file)
@@ -1221,40 +1254,40 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             } catch (e) {}
         }
-        
+
         try {
             const mapSrc = TABS_MAP_FILE
             const mapDst = path.join(backupTabsDir, '_tabs_map.json')
             await fs.copyFile(mapSrc, mapDst).catch(() => {})
         } catch {}
-        
+
         return { backupFolder, backedUpCount }
     }
 
     async function exportTxtFiles() {
         const autoExport = api.getConfig('autoExportTxt')
         if (!autoExport) return []
-        
+
         const tabs = getTabs()
         const exportFiles = []
         const timestamp = getTimestamp()
-        
+
         const exportFolder = path.join(BACKUP_DIR, 'txt_exports', timestamp)
         await fs.mkdir(exportFolder, { recursive: true }).catch(() => {})
-        
+
         for (const tab of tabs) {
             try {
                 const index = await loadTabIndex(tab)
                 const timestamps = Object.keys(index.notes).sort()
-                
+
                 if (timestamps.length === 0) continue
-                
+
                 const safeTabName = tab.replace(/[\\/:*?"<>|]/g, '_')
                 const tabExportDir = path.join(exportFolder, safeTabName)
                 await fs.mkdir(tabExportDir, { recursive: true }).catch(() => {})
-                
+
                 let exportedCount = 0
-                
+
                 for (const ts of timestamps) {
                     try {
                         const meta = index.notes[ts]
@@ -1263,31 +1296,31 @@ async function promoteImageFromTemp(imageId, tab) {
                             const safeTs = ts.replace(/[\\/:*?"<>|]/g, '_')
                             const txtFileName = `${safeTs}.txt`
                             const txtFilePath = path.join(tabExportDir, txtFileName)
-                            
+
                             const dateStr = new Date(ts).toLocaleString()
                             const txtContent = `[${dateStr}] ${meta.u || 'Unknown'}\n${content}\n`
-                            
+
                             await fs.writeFile(txtFilePath, txtContent, 'utf-8')
                             exportFiles.push(txtFilePath)
                             exportedCount++
                         }
                     } catch (noteErr) {}
                 }
-                
+
                 if (exportedCount === 0) {
                     await fs.rmdir(tabExportDir).catch(() => {})
                 }
-                
+
             } catch (e) {}
         }
-        
+
         try {
             const tabDirs = await fs.readdir(exportFolder).catch(() => [])
             if (tabDirs.length === 0) {
                 await fs.rmdir(exportFolder).catch(() => {})
             }
         } catch {}
-        
+
         return exportFiles
     }
 
@@ -1295,13 +1328,13 @@ async function promoteImageFromTemp(imageId, tab) {
         try {
             const retentionDays = api.getConfig('backupRetentionDays') || 3
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
-            
+
             const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true }).catch(() => [])
-            
+
             for (const entry of entries) {
                 if (!entry.isDirectory()) continue
                 if (entry.name === 'txt_exports') continue
-                
+
                 const folderPath = path.join(BACKUP_DIR, entry.name)
                 try {
                     const stat = await fs.stat(folderPath)
@@ -1310,7 +1343,7 @@ async function promoteImageFromTemp(imageId, tab) {
                     }
                 } catch {}
             }
-            
+
             const txtBaseDir = path.join(BACKUP_DIR, 'txt_exports')
             try {
                 const txtFolders = await fs.readdir(txtBaseDir, { withFileTypes: true }).catch(() => [])
@@ -1325,13 +1358,13 @@ async function promoteImageFromTemp(imageId, tab) {
                     } catch {}
                 }
             } catch {}
-            
+
         } catch {}
     }
 
     async function performScheduledBackup() {
         if (isBackupRunning) return
-        
+
         isBackupRunning = true
         try {
             await createBackup()
@@ -1348,17 +1381,17 @@ async function promoteImageFromTemp(imageId, tab) {
             clearInterval(backupTimer)
             backupTimer = null
         }
-        
+
         const interval = api.getConfig('backupInterval') || 6
-        
+
         if (interval <= 0) return
-        
+
         const intervalMs = interval * 60 * 60 * 1000
-        
+
         backupTimer = setInterval(async () => {
             await performScheduledBackup()
         }, intervalMs)
-        
+
         if (backupTimer && backupTimer.unref) {
             backupTimer.unref()
         }
@@ -1376,7 +1409,7 @@ async function promoteImageFromTemp(imageId, tab) {
             clearTimeout(midnightCleanupTimer)
             midnightCleanupTimer = null
         }
-        
+
         const scheduleNext = () => {
             const delay = getMillisUntilMidnight()
             midnightCleanupTimer = setTimeout(() => {
@@ -1393,7 +1426,7 @@ async function promoteImageFromTemp(imageId, tab) {
 
     setupBackupTimer()
     setupMidnightCleanup()
-    
+
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
         setupBackupTimer()
         setTimeout(async () => {
@@ -1401,8 +1434,8 @@ async function promoteImageFromTemp(imageId, tab) {
         }, 500)
         if (api.getConfig('tabList')) {
             syncTabsMapWithConfig().then(tabsMap => {
-                api.notifyClient('notes', 'tabsReordered', { 
-                    tabs: tabsMap.order, 
+                api.notifyClient('notes', 'tabsReordered', {
+                    tabs: tabsMap.order,
                     categories: tabsMap.categories,
                     categoryOrder: tabsMap.categoryOrder,
                     categoryNames: tabsMap.categoryNames
@@ -1423,9 +1456,9 @@ async function promoteImageFromTemp(imageId, tab) {
             for (const tab of tabs) {
                 result[tab] = await getTabNoteCount(tab)
             }
-            ctx.body = { 
-                tabs, 
-                counts: result, 
+            ctx.body = {
+                tabs,
+                counts: result,
                 warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
                 tabNames: tabsMap.names,
                 categories: tabsMap.categories || {},
@@ -1443,9 +1476,9 @@ async function promoteImageFromTemp(imageId, tab) {
         for (const tab of tabs) {
             result[tab] = await getTabNoteCount(tab)
         }
-        ctx.body = { 
-            tabs, 
-            counts: result, 
+        ctx.body = {
+            tabs,
+            counts: result,
             warning: Object.values(result).reduce((a, b) => a + b, 0) >= MAX_STORAGE_WARNING,
             tabNames: tabsMap.names,
             categories: tabsMap.categories || {},
@@ -1459,23 +1492,23 @@ async function promoteImageFromTemp(imageId, tab) {
     async function renameTab(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
         const { tab, newName } = body
-        
+
         if (!tab || newName == null) {
             ctx.status = 400; return
         }
-        
+
         const tabsMap = await loadTabsMap()
         const trimmed = (typeof newName === 'string') ? newName.trim() : ''
-        
+
         if (trimmed === '') {
             delete tabsMap.names[tab]
         } else {
             tabsMap.names[tab] = sanitizeForDb(trimmed)
         }
-        
+
         await saveTabsMap(tabsMap)
         const notifyName = trimmed || tab
         api.notifyClient('notes', 'tabRenamed', { tab, newName: notifyName })
@@ -1486,15 +1519,15 @@ async function promoteImageFromTemp(imageId, tab) {
     async function updateCategory(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
         const { tab, category } = body
-        
+
         if (!tab) { ctx.status = 400; return }
-        
+
         const tabsMap = await loadTabsMap()
         if (!tabsMap.categories) tabsMap.categories = {}
-        
+
         if (category && category.trim()) {
             tabsMap.categories[tab] = category.trim()
             const catName = category.trim()
@@ -1506,7 +1539,7 @@ async function promoteImageFromTemp(imageId, tab) {
         } else {
             delete tabsMap.categories[tab]
         }
-        
+
         await saveTabsMap(tabsMap)
         api.notifyClient('notes', 'categoryUpdated', { tab, category: category && category.trim() ? category.trim() : '' })
         ctx.body = { ok: true }
@@ -1516,31 +1549,31 @@ async function promoteImageFromTemp(imageId, tab) {
     async function updateCategoryName(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
         const { oldCategory, newCategory } = body
-        
+
         if (!oldCategory || !newCategory) {
             ctx.status = 400; return
         }
-        
+
         const tabsMap = await loadTabsMap()
         if (!tabsMap.categoryNames) tabsMap.categoryNames = {}
-        
+
         const trimmed = newCategory.trim()
         if (trimmed) {
             tabsMap.categoryNames[oldCategory] = trimmed
         } else {
             delete tabsMap.categoryNames[oldCategory]
         }
-        
+
         if (tabsMap.categoryOrder) {
             const idx = tabsMap.categoryOrder.indexOf(oldCategory)
             if (idx > -1) {
                 tabsMap.categoryOrder[idx] = trimmed
             }
         }
-        
+
         await saveTabsMap(tabsMap)
         api.notifyClient('notes', 'categoryNameUpdated', { oldCategory, newCategory: trimmed || oldCategory })
         ctx.body = { ok: true }
@@ -1550,18 +1583,18 @@ async function promoteImageFromTemp(imageId, tab) {
     async function updateCategoryOrder(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
         const { order } = body
-        
+
         if (!order || !Array.isArray(order)) {
             ctx.status = 400; return
         }
-        
+
         const tabsMap = await loadTabsMap()
         tabsMap.categoryOrder = order
         await saveTabsMap(tabsMap)
-        
+
         api.notifyClient('notes', 'categoryOrderUpdated', { order })
         ctx.body = { ok: true }
         ctx.status = 200
@@ -1572,23 +1605,23 @@ async function promoteImageFromTemp(imageId, tab) {
         const tab = ctx.query?.tab
         if (!tab) { ctx.status = 400; return }
         if (!isAllowed(username, tab)) { ctx.status = 403; return }
-        
+
         const offset = parseInt(ctx.query?.offset) || 0
         const limit = Math.min(parseInt(ctx.query?.limit) || PAGE_SIZE, 100)
         const summaryOnly = ctx.query?.summary === '1'
-        
+
         const index = await loadTabIndex(tab)
         const allTimestamps = Object.keys(index.notes).sort()
         const totalCount = allTimestamps.length
-        
+
         const endIdx = totalCount - offset
         const startIdx = Math.max(0, endIdx - limit)
         const pageTimestamps = allTimestamps.slice(startIdx, endIdx)
-        
+
         const pageNotes = {}
         const imageIds = new Set()
         const movIds = new Set()
-        
+
         for (const ts of pageTimestamps) {
             const meta = index.notes[ts]
             const content = await loadNoteContent(tab, ts)
@@ -1616,9 +1649,9 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         }
-        
+
         const hasMoreData = startIdx > 0
-        
+
         const thumbMap = {}
         for (const id of imageIds) {
             thumbMap[id] = hasThumbnail(tab, id)
@@ -1626,7 +1659,7 @@ async function promoteImageFromTemp(imageId, tab) {
         for (const id of movIds) {
             thumbMap[id] = hasThumbnail(tab, id)
         }
-        
+
         let fileNames = {}
         try {
             fileNames = JSON.parse(await fs.readFile(getNameMapPath(tab, 'mov'), 'utf-8'))
@@ -1635,10 +1668,10 @@ async function promoteImageFromTemp(imageId, tab) {
             const attNames = JSON.parse(await fs.readFile(getNameMapPath(tab, 'att'), 'utf-8'))
             Object.assign(fileNames, attNames)
         } catch {}
-        
-        ctx.body = { 
-            notes: pageNotes, 
-            count: totalCount, 
+
+        ctx.body = {
+            notes: pageNotes,
+            count: totalCount,
             warning: totalCount >= MAX_STORAGE_WARNING,
             thumbMap,
             fileNames,
@@ -1656,63 +1689,284 @@ async function promoteImageFromTemp(imageId, tab) {
         const ts = ctx.query?.ts
         if (!tab || !ts) { ctx.status = 400; return }
         if (!isAllowed(username, tab)) { ctx.status = 403; return }
-        
+
         const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
-        
+
         ctx.body = { m: note.m }
         ctx.status = 200
     }
 
+    const IMG_EXT_REGEX = /\.(jpe?g|png|gif|webp|bmp|tiff?|svg|avif|heic|heif|ico|jfif)(?:\?[^\s\)\]\>"']*)?$/i
+    const VIDEO_EXT_REGEX = /\.(mp4|webm|ogg|ogv|mov|avi|mkv|wmv|flv|m4v|3gp|ts|mts|m2ts)(?:\?[^\s\)\]\>"']*)?$/i
+    const AUDIO_EXT_REGEX = /\.(mp3|wav|flac|aac|m4a|opus|oga|wma|ape|aiff|alac|dsf|dff)(?:\?[^\s\)\]\>"']*)?$/i
+
+    function isLikelyMediaUrl(url) {
+        if (!/^https?:\/\//i.test(url)) return false
+        if (url.includes('/~/notes/')) return false
+        return true
+    }
+
+    function downloadBuffer(url, maxSize) {
+        return new Promise((resolve) => {
+            let mod
+            try {
+                mod = url.startsWith('https') ? https : http
+            } catch {
+                resolve(null); return
+            }
+            let req
+            try {
+                req = mod.get(url, {
+                    timeout: DOWNLOAD_TIMEOUT,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (compatible; HFS-Notes/1.0)',
+                        'Accept': '*/*'
+                    }
+                }, (res) => {
+                    if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+                        res.resume()
+                        let nextUrl
+                        try {
+                            nextUrl = new URL(res.headers.location, url).href
+                        } catch {
+                            resolve(null); return
+                        }
+                        resolve(downloadBuffer(nextUrl, maxSize))
+                        return
+                    }
+                    if (res.statusCode !== 200) { res.resume(); resolve(null); return }
+                    const chunks = []
+                    let size = 0
+                    let aborted = false
+                    res.on('data', (chunk) => {
+                        if (aborted) return
+                        size += chunk.length
+                        if (size > maxSize) { aborted = true; req.destroy(); resolve(null); return }
+                        chunks.push(chunk)
+                    })
+                    res.on('end', () => {
+                        if (aborted) return
+                        const buf = Buffer.concat(chunks)
+                        resolve({
+                            buffer: buf,
+                            contentType: (res.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
+                        })
+                    })
+                    res.on('error', () => { if (!aborted) resolve(null) })
+                })
+            } catch {
+                resolve(null); return
+            }
+            req.on('error', () => resolve(null))
+            req.on('timeout', () => { try { req.destroy() } catch {} resolve(null) })
+        })
+    }
+
+    function extFromContentType(ct) {
+        if (!ct) return ''
+        const map = {
+            'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+            'image/png': '.png', 'image/gif': '.gif',
+            'image/webp': '.webp', 'image/bmp': '.bmp',
+            'image/tiff': '.tiff', 'image/svg+xml': '.svg',
+            'image/avif': '.avif', 'image/heic': '.heic',
+            'image/heif': '.heif', 'image/x-icon': '.ico',
+            'image/vnd.microsoft.icon': '.ico',
+            'video/mp4': '.mp4', 'video/webm': '.webm',
+            'video/ogg': '.ogv', 'video/quicktime': '.mov',
+            'video/x-msvideo': '.avi', 'video/x-matroska': '.mkv',
+            'video/x-ms-wmv': '.wmv', 'video/x-flv': '.flv',
+            'audio/mpeg': '.mp3', 'audio/mp3': '.mp3',
+            'audio/wav': '.wav', 'audio/x-wav': '.wav',
+            'audio/flac': '.flac', 'audio/x-flac': '.flac',
+            'audio/aac': '.aac', 'audio/mp4': '.m4a',
+            'audio/opus': '.opus', 'audio/ogg': '.ogg'
+        }
+        return map[ct] || ''
+    }
+
+    function buildOriginalNameFromUrl(url, contentType) {
+        try {
+            const u = new URL(url)
+            let base = path.basename(u.pathname) || 'media'
+            base = base.split('?')[0]
+            let ext = path.extname(base)
+            if (!ext) {
+                ext = extFromContentType(contentType) || ''
+                if (ext) base = base + ext
+            }
+            base = base.replace(/[\\/:*?"<>|]/g, '_')
+            if (!base) base = 'media_' + Date.now() + (ext || '')
+            return base
+        } catch {
+            const ext = extFromContentType(contentType) || ''
+            return 'media_' + Date.now() + ext
+        }
+    }
+
+    async function saveExternalImage(buffer, originalName, tab) {
+        const fileId = generateFileId(originalName)
+        const imgDir = getTabImgDir(tab)
+        const thumbDir = getTabThumbDir(tab)
+        await ensureDir(imgDir)
+        await ensureDir(thumbDir)
+        try {
+            await generateThumbnail(buffer, path.join(thumbDir, fileId))
+        } catch {}
+        await fs.writeFile(path.join(imgDir, fileId), buffer)
+        return fileId
+    }
+
+    async function saveExternalMedia(buffer, originalName, tab) {
+        const fileId = generateFileId(originalName)
+        const movDir = getTabMovDir(tab)
+        await ensureDir(movDir)
+        await fs.writeFile(path.join(movDir, fileId), buffer)
+        try {
+            const mapPath = getNameMapPath(tab, 'mov')
+            let nameMap = {}
+            try {
+                nameMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'))
+            } catch {}
+            nameMap[fileId] = originalName
+            await fs.writeFile(mapPath, JSON.stringify(nameMap))
+        } catch {}
+        try {
+            const videoPath = path.join(movDir, fileId)
+            extractVideoThumbnail(videoPath, tab, fileId).catch(() => {})
+        } catch {}
+        return fileId
+    }
+
+    async function localizeExternalMedia(content, tab) {
+        if (!content) return content
+
+        let work = content.replace(/\[img\](https?:\/\/[^\[]+?)\[\/img\]/gi, (m, url) => url)
+
+        const localMarks = []
+        work = work.replace(/\[(img|mov|att):[^\]]+\]/g, (m) => {
+            localMarks.push(m)
+            return `\u0000LOCAL${localMarks.length - 1}\u0000`
+        })
+
+        const urlRegex = /https?:\/\/[^\s<>"'\)\]]+/gi
+        const rawUrls = work.match(urlRegex) || []
+        const candidates = [...new Set(rawUrls)].filter(u => isLikelyMediaUrl(u))
+
+        if (candidates.length === 0) {
+            work = work.replace(/\u0000LOCAL(\d+)\u0000/g, (m, i) => localMarks[parseInt(i)])
+            return work
+        }
+
+        const results = new Map()
+        let idx = 0
+        const workers = Array.from(
+            { length: Math.min(MAX_CONCURRENT_DOWNLOADS, candidates.length) },
+            async () => {
+                while (idx < candidates.length && idx < MAX_LOCALIZE_TOTAL) {
+                    const myIdx = idx++
+                    const url = candidates[myIdx]
+                    try {
+                        const dl = await downloadBuffer(url, MAX_IMG_SIZE)
+                        if (!dl || !dl.buffer || dl.buffer.length === 0) {
+                            results.set(url, null); continue
+                        }
+                        const ct = dl.contentType
+                        const looksImage = ct.startsWith('image/') || IMG_EXT_REGEX.test(url.split('?')[0])
+                        const looksVideo = ct.startsWith('video/') || VIDEO_EXT_REGEX.test(url.split('?')[0])
+                        const looksAudio = ct.startsWith('audio/') || AUDIO_EXT_REGEX.test(url.split('?')[0])
+
+                        if (looksImage) {
+                            const originalName = buildOriginalNameFromUrl(url, ct)
+                            const fileId = await saveExternalImage(dl.buffer, originalName, tab)
+                            results.set(url, { type: 'img', fileId })
+                        } else if (looksVideo || looksAudio) {
+                            const originalName = buildOriginalNameFromUrl(url, ct)
+                            const fileId = await saveExternalMedia(dl.buffer, originalName, tab)
+                            results.set(url, { type: 'mov', fileId, name: originalName })
+                        } else {
+                            results.set(url, null)
+                        }
+                    } catch {
+                        results.set(url, null)
+                    }
+                }
+            }
+        )
+        await Promise.all(workers)
+
+        for (const [url, info] of results) {
+            if (!info) continue
+            const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            let replacement
+            if (info.type === 'img') {
+                replacement = `[img:${info.fileId}]`
+            } else {
+                replacement = `[mov:${info.fileId}:${info.name}]`
+            }
+            work = work.replace(new RegExp(escaped, 'g'), replacement)
+        }
+
+        work = work.replace(/\u0000LOCAL(\d+)\u0000/g, (m, i) => localMarks[parseInt(i)])
+
+        return work
+    }
+
     async function addNote(ctx) {
         const username = getCurrentUsername(ctx) || 'Guest'
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
-        
+
         const m = body.m
         const tab = body.tab
         const forceCollapsed = body.collapsed === true
-        
+
         if (!m || typeof m !== 'string') {
             ctx.status = 400; return
         }
         if (!tab) { ctx.status = 400; return }
         if (!isAllowed(username, tab)) { ctx.status = 403; return }
-        
+
         const tdb = await throttleDb
         const last = await tdb.get(username)
         if (last && last + SPAM_DELAY > Date.now()) {
             ctx.status = 429; return
         }
         tdb.put(username, Date.now())
-        
+
         const count = await getTabNoteCount(tab)
-        
+
         const ts = new Date().toISOString()
-        
+
         const sanitizedM = sanitizeForDb(m)
         if (!sanitizedM) {
             ctx.status = 400; return
         }
-        
-        const lineCount = sanitizedM.split('\n').length
+
+        let localizedM = sanitizedM
+        try {
+            localizedM = await localizeExternalMedia(sanitizedM, tab)
+        } catch (e) {}
+
+        const lineCount = localizedM.split('\n').length
         const autoCollapsed = forceCollapsed || lineCount > 100
-        
+
         if (username && username !== 'Guest') {
-            await promoteAllAttachments(sanitizedM, tab)
+            await promoteAllAttachments(localizedM, tab)
         }
-        
+
         await addNoteToTab(tab, ts, {
-            m: sanitizedM,
+            m: localizedM,
             u: username,
             starred: false,
             collapsed: autoCollapsed
         })
-        
+
         const newCount = count + 1
-        
-        api.notifyClient('notes', 'newNote', { ts, u: username, m: sanitizedM, tab, starred: false, collapsed: autoCollapsed })
-        
+
+        api.notifyClient('notes', 'newNote', { ts, u: username, m: localizedM, tab, starred: false, collapsed: autoCollapsed })
+
         ctx.status = 201
         ctx.body = { count: newCount, warning: newCount >= MAX_STORAGE_WARNING }
     }
@@ -1720,80 +1974,85 @@ async function promoteImageFromTemp(imageId, tab) {
     async function updateNote(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
-        
+
         const { ts, tab, m } = body
-        
+
         if (!ts || !tab || !m || typeof m !== 'string') {
             ctx.status = 400; return
         }
-        
+
         const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
-        
+
         const sanitizedM = sanitizeForDb(m)
         if (!sanitizedM) {
             ctx.status = 400; return
         }
-        
+
+        let localizedM = sanitizedM
+        try {
+            localizedM = await localizeExternalMedia(sanitizedM, tab)
+        } catch (e) {}
+
         const oldImgIds = extractImageIds(note.m)
-        const newImgIds = extractImageIds(sanitizedM)
+        const newImgIds = extractImageIds(localizedM)
         const removedImgIds = oldImgIds.filter(id => !newImgIds.includes(id))
         for (const id of removedImgIds) {
             await deleteAttachmentAcrossAllTabs(id, 'img')
             await deleteAttachmentAcrossAllTabs(id, 'thumb')
         }
-        
+
         const oldMovIds = extractMovIds(note.m)
-        const newMovIds = extractMovIds(sanitizedM)
+        const newMovIds = extractMovIds(localizedM)
         const removedMovIds = oldMovIds.filter(id => !newMovIds.includes(id))
         for (const id of removedMovIds) {
             await deleteAttachmentAcrossAllTabs(id, 'mov')
         }
-        
+
         const oldAttIds = extractAttIds(note.m)
-        const newAttIds = extractAttIds(sanitizedM)
+        const newAttIds = extractAttIds(localizedM)
         const removedAttIds = oldAttIds.filter(id => !newAttIds.includes(id))
         for (const id of removedAttIds) {
             await deleteAttachmentAcrossAllTabs(id, 'att')
         }
-        
-        await promoteAllAttachments(sanitizedM, tab)
-        
+
+        await promoteAllAttachments(localizedM, tab)
+
         await updateNoteInTab(tab, ts, {
-            m: sanitizedM,
+            m: localizedM,
             u: note.u,
             starred: note.starred || false,
             collapsed: note.collapsed || false
         })
-        
-        api.notifyClient('notes', 'updateNote', { ts, tab, m: sanitizedM, starred: note.starred || false, collapsed: note.collapsed || false })
+
+        api.notifyClient('notes', 'updateNote', { ts, tab, m: localizedM, starred: note.starred || false, collapsed: note.collapsed || false })
         ctx.status = 200
     }
 
     async function toggleStar(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
-        
+
         const { ts, tab } = body
-        
+
         if (!ts || !tab) { ctx.status = 400; return }
-        
+
         const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
-        
+
         const newStarred = !(note.starred || false)
         await updateNoteInTab(tab, ts, {
             u: note.u,
             starred: newStarred,
             collapsed: note.collapsed || false
         })
-        
+
         api.notifyClient('notes', 'toggleStar', { ts, tab, starred: newStarred })
         ctx.body = { starred: newStarred }
         ctx.status = 200
@@ -1803,24 +2062,24 @@ async function promoteImageFromTemp(imageId, tab) {
         const username = getCurrentUsername(ctx)
         if (!username) { ctx.status = 403; return }
         if (!isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
-        
+
         const { ts, tab } = body
-        
+
         if (!ts || !tab) { ctx.status = 400; return }
-        
+
         const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
-        
+
         const newCollapsed = !(note.collapsed || false)
         await updateNoteInTab(tab, ts, {
             u: note.u,
             starred: note.starred || false,
             collapsed: newCollapsed
         })
-        
+
         api.notifyClient('notes', 'toggleCollapse', { ts, tab, collapsed: newCollapsed })
         ctx.body = { collapsed: newCollapsed }
         ctx.status = 200
@@ -1829,35 +2088,35 @@ async function promoteImageFromTemp(imageId, tab) {
     async function deleteNote(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
-        
+
         const { ts, tab } = body
-        
+
         if (!ts || !tab) { ctx.status = 400; return }
-        
+
         const note = await getNoteWithContent(tab, ts)
         if (!note) { ctx.status = 404; return }
         if (username !== 'admin' && note.u !== username) { ctx.status = 403; return }
-        
+
         if (note.m) {
             const imgIds = extractImageIds(note.m)
             for (const id of imgIds) {
                 await deleteAttachmentAcrossAllTabs(id, 'img')
                 await deleteAttachmentAcrossAllTabs(id, 'thumb')
             }
-            
+
             const movIds = extractMovIds(note.m)
             for (const id of movIds) {
                 await deleteAttachmentAcrossAllTabs(id, 'mov')
             }
-            
+
             const attIds = extractAttIds(note.m)
             for (const id of attIds) {
                 await deleteAttachmentAcrossAllTabs(id, 'att')
             }
         }
-        
+
         await deleteNoteFromTab(tab, ts)
         api.notifyClient('notes', 'deleteNote', { ts, tab })
         ctx.status = 200
@@ -1866,18 +2125,18 @@ async function promoteImageFromTemp(imageId, tab) {
     async function reorderTabs(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
         const { tabs: newOrder } = body
         if (!newOrder || !Array.isArray(newOrder)) {
             ctx.status = 400; return
         }
-        
+
         const tabsMap = await loadTabsMap()
         tabsMap.order = newOrder
         await saveTabsMap(tabsMap)
-        api.notifyClient('notes', 'tabsReordered', { 
-            tabs: newOrder, 
+        api.notifyClient('notes', 'tabsReordered', {
+            tabs: newOrder,
             categories: tabsMap.categories,
             categoryOrder: tabsMap.categoryOrder,
             categoryNames: tabsMap.categoryNames
@@ -1889,7 +2148,7 @@ async function promoteImageFromTemp(imageId, tab) {
     async function checkAccess(ctx) {
         const username = getCurrentUsername(ctx)
         const publicTabs = getPublicTabs()
-        ctx.body = { 
+        ctx.body = {
             allowed: !!username || publicTabs.length > 0,
             isGuest: !username,
             publicTabs: publicTabs
@@ -1900,28 +2159,28 @@ async function promoteImageFromTemp(imageId, tab) {
     async function adminOverview(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         const tabs = getTabs()
         const dbInfo = {}
         let totalNotes = 0
-        
+
         for (const tab of tabs) {
             const index = await loadTabIndex(tab)
             const timestamps = Object.keys(index.notes).sort()
             const count = timestamps.length
-            dbInfo[tab] = { 
-                count, 
-                firstNote: count > 0 ? timestamps[0] : null, 
-                lastNote: count > 0 ? timestamps[count - 1] : null 
+            dbInfo[tab] = {
+                count,
+                firstNote: count > 0 ? timestamps[0] : null,
+                lastNote: count > 0 ? timestamps[count - 1] : null
             }
             totalNotes += count
         }
-        
+
         let backups = []
         try {
             const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true }).catch(() => [])
             const backupDirs = entries.filter(e => e.isDirectory() && e.name !== 'txt_exports')
-            
+
             for (const entry of backupDirs) {
                 const folderPath = path.join(BACKUP_DIR, entry.name)
                 try {
@@ -1942,7 +2201,7 @@ async function promoteImageFromTemp(imageId, tab) {
                             }
                         } catch {}
                     }
-                    
+
                     backups.push({
                         name: entry.name,
                         timestamp: entry.name,
@@ -1955,12 +2214,12 @@ async function promoteImageFromTemp(imageId, tab) {
             }
             backups.sort((a, b) => b.created.localeCompare(a.created))
         } catch {}
-        
+
         let txtExports = []
         try {
             const txtBaseDir = path.join(BACKUP_DIR, 'txt_exports')
             const txtFolders = await fs.readdir(txtBaseDir, { withFileTypes: true }).catch(() => [])
-            
+
             for (const folder of txtFolders) {
                 if (!folder.isDirectory()) continue
                 const folderPath = path.join(txtBaseDir, folder.name)
@@ -1969,7 +2228,7 @@ async function promoteImageFromTemp(imageId, tab) {
                     let totalSize = 0
                     let fileCount = 0
                     const tabDirs = await fs.readdir(folderPath).catch(() => [])
-                    
+
                     for (const tabDir of tabDirs) {
                         const tabPath = path.join(folderPath, tabDir)
                         try {
@@ -1985,7 +2244,7 @@ async function promoteImageFromTemp(imageId, tab) {
                             }
                         } catch {}
                     }
-                    
+
                     txtExports.push({
                         name: folder.name,
                         timestamp: folder.name,
@@ -1999,7 +2258,7 @@ async function promoteImageFromTemp(imageId, tab) {
             }
             txtExports.sort((a, b) => b.created.localeCompare(a.created))
         } catch {}
-        
+
         let imgStats = { count: 0, totalSize: 0, tabs: {}, tempCount: 0 }
         try {
             const tabDirs = await fs.readdir(IMG_BASE_DIR).catch(() => [])
@@ -2018,7 +2277,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         } catch {}
-        
+
         let tempStats = { count: 0, totalSize: 0 }
         try {
             const tempFiles = await fs.readdir(TEMP_DIR).catch(() => [])
@@ -2031,7 +2290,7 @@ async function promoteImageFromTemp(imageId, tab) {
             }
         } catch {}
         imgStats.tempCount = tempStats.count
-        
+
         let thumbStats = { count: 0, totalSize: 0, tabs: {} }
         try {
             const tabDirs = await fs.readdir(THUMB_BASE_DIR).catch(() => [])
@@ -2050,7 +2309,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         } catch {}
-        
+
         let movStats = { count: 0, totalSize: 0, tabs: {} }
         try {
             const tabDirs = await fs.readdir(MOV_BASE_DIR).catch(() => [])
@@ -2070,7 +2329,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         } catch {}
-        
+
         let attStats = { count: 0, totalSize: 0, tabs: {} }
         try {
             const tabDirs = await fs.readdir(ATT_BASE_DIR).catch(() => [])
@@ -2090,7 +2349,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         } catch {}
-        
+
         ctx.body = {
             config: {
                 tabList: api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }],
@@ -2124,16 +2383,16 @@ async function promoteImageFromTemp(imageId, tab) {
     async function adminExport(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         const tab = ctx.query?.tab
         const tabs = getTabs()
         const exportData = {
             exportTime: new Date().toISOString(), exportedBy: username,
-            config: { tabList: api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }] }, 
+            config: { tabList: api.getConfig('tabList') || [{ name: 'General', category: '', publicNote: false }] },
             storageType: 'file-based',
             data: {}
         }
-        
+
         const tabsToExport = tab ? [tab] : tabs
         for (const t of tabsToExport) {
             if (!tabs.includes(t)) continue
@@ -2151,7 +2410,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         }
-        
+
         ctx.type = 'application/json'
         ctx.set('Content-Disposition', `attachment; filename="notes_export_${getTimestamp()}.json"`)
         ctx.body = JSON.stringify(exportData, null, 2)
@@ -2161,7 +2420,7 @@ async function promoteImageFromTemp(imageId, tab) {
     async function adminImport(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body
         try {
             body = await ctx.getBody()
@@ -2169,13 +2428,13 @@ async function promoteImageFromTemp(imageId, tab) {
         } catch {
             ctx.status = 400; ctx.body = { error: 'Invalid JSON' }; return
         }
-        
+
         if (!body.data || typeof body.data !== 'object') {
             ctx.status = 400; ctx.body = { error: 'Invalid import format' }; return
         }
-        
+
         await createBackup()
-        
+
         let imported = 0
         const tabs = getTabs()
         for (const [tab, notes] of Object.entries(body.data)) {
@@ -2194,7 +2453,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
             }
         }
-        
+
         ctx.body = { ok: true, imported, tabs: Object.keys(body.data) }
         ctx.status = 200
     }
@@ -2202,18 +2461,18 @@ async function promoteImageFromTemp(imageId, tab) {
     async function adminBackup(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         try {
             const result = await createBackup()
             await cleanupOldBackups()
-            
+
             let txtFiles = []
             if (api.getConfig('autoExportTxt')) {
                 txtFiles = await exportTxtFiles()
             }
-            
-            ctx.body = { 
-                ok: true, 
+
+            ctx.body = {
+                ok: true,
                 backupFolder: result.backupFolder,
                 fileCount: result.backedUpCount,
                 txtFiles: txtFiles.map(f => ({
@@ -2229,18 +2488,18 @@ async function promoteImageFromTemp(imageId, tab) {
     async function adminClearTab(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         let body = ctx.state.params || ctx.request?.body || {}
         const { tab } = body
         if (!tab) { ctx.status = 400; return }
-        
+
         const tabs = getTabs()
         if (!tabs.includes(tab)) { ctx.status = 400; ctx.body = { error: 'Invalid tab' }; return }
-        
+
         await createBackup()
-        
+
         const index = await loadTabIndex(tab)
-        
+
         for (const ts of Object.keys(index.notes)) {
             const content = await loadNoteContent(tab, ts)
             if (content) {
@@ -2249,62 +2508,62 @@ async function promoteImageFromTemp(imageId, tab) {
                     await deleteAttachmentAcrossAllTabs(id, 'img')
                     await deleteAttachmentAcrossAllTabs(id, 'thumb')
                 }
-                
+
                 const movIds = extractMovIds(content)
                 for (const id of movIds) {
                     await deleteAttachmentAcrossAllTabs(id, 'mov')
                 }
-                
+
                 const attIds = extractAttIds(content)
                 for (const id of attIds) {
                     await deleteAttachmentAcrossAllTabs(id, 'att')
                 }
             }
         }
-        
+
         const imgDir = getTabImgDir(tab)
         try {
             const imgFiles = await fs.readdir(imgDir).catch(() => [])
             for (const f of imgFiles) await fs.unlink(path.join(imgDir, f)).catch(() => {})
         } catch {}
-        
+
         const thumbDir = getTabThumbDir(tab)
         try {
             const thumbFiles = await fs.readdir(thumbDir).catch(() => [])
             for (const f of thumbFiles) await fs.unlink(path.join(thumbDir, f)).catch(() => {})
         } catch {}
-        
+
         const movDir = getTabMovDir(tab)
         try {
             const movFiles = await fs.readdir(movDir).catch(() => [])
             for (const f of movFiles) await fs.unlink(path.join(movDir, f)).catch(() => {})
             await fs.unlink(path.join(movDir, '.filenames')).catch(() => {})
         } catch {}
-        
+
         const attDir = getTabAttDir(tab)
         try {
             const attFiles = await fs.readdir(attDir).catch(() => [])
             for (const f of attFiles) await fs.unlink(path.join(attDir, f)).catch(() => {})
             await fs.unlink(path.join(attDir, '.filenames')).catch(() => {})
         } catch {}
-        
+
         const count = Object.keys(index.notes).length
         await clearTabData(tab)
-        
+
         api.notifyClient('notes', 'tabCleared', { tab })
-        
+
         ctx.body = { ok: true, cleared: count, tab }
         ctx.status = 200
     }
-    
+
     async function adminExportTxt(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
-        
+
         try {
             const txtFiles = await exportTxtFiles()
-            ctx.body = { 
-                ok: true, 
+            ctx.body = {
+                ok: true,
                 count: txtFiles.length,
                 files: txtFiles.map(f => ({
                     name: path.basename(f),
@@ -2316,7 +2575,7 @@ async function promoteImageFromTemp(imageId, tab) {
             ctx.status = 500; ctx.body = { error: 'TXT export failed' }
         }
     }
-    
+
     async function uploadFileToTemp(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
@@ -2334,7 +2593,7 @@ async function promoteImageFromTemp(imageId, tab) {
             const displayName = body.displayName || originalName
 
             if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
-            
+
             const isImage = mimeType.startsWith('image/')
             const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
             if (fileBuffer.length > maxSize) {
@@ -2344,9 +2603,9 @@ async function promoteImageFromTemp(imageId, tab) {
             await ensureDir(TEMP_DIR)
             const fileId = generateFileId(originalName)
             const filePath = path.join(TEMP_DIR, fileId)
-            
+
             await fs.writeFile(filePath, fileBuffer)
-            
+
             const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
             let tempNameMap = {}
             try {
@@ -2354,10 +2613,10 @@ async function promoteImageFromTemp(imageId, tab) {
             } catch {}
             tempNameMap[fileId] = originalName
             await fs.writeFile(tempMapPath, JSON.stringify(tempNameMap))
-            
+
             const isVideo = mimeType.startsWith('video/')
             const isAudio = mimeType.startsWith('audio/')
-            
+
             let hasThumb = false
             if (isImage) {
                 const thumbDir = await ensureDir(THUMB_BASE_DIR)
@@ -2366,9 +2625,9 @@ async function promoteImageFromTemp(imageId, tab) {
                 const thumbPath = path.join(thumbSubDir, fileId)
                 hasThumb = await generateThumbnail(fileBuffer, thumbPath)
             }
-            
-            ctx.body = { 
-                ok: true, 
+
+            ctx.body = {
+                ok: true,
                 fileId,
                 isImage,
                 isVideo,
@@ -2384,15 +2643,22 @@ async function promoteImageFromTemp(imageId, tab) {
             ctx.status = 500; ctx.body = { error: 'Upload failed: ' + e.message }
         }
     }
-    
+
     async function serveTempFile(ctx) {
         const params = ctx.params || {}
-        const fileId = params.fileId
-        
+        let fileId = params.fileId
+
         if (!fileId) { ctx.status = 404; return }
-        
+
+        try {
+            fileId = decodeURIComponent(fileId)
+            if (fileId.includes('%')) {
+                fileId = decodeURIComponent(fileId)
+            }
+        } catch (e) {}
+
         const filePath = path.join(TEMP_DIR, fileId)
-        
+
         try {
             await fs.stat(filePath)
             const ext = path.extname(fileId).slice(1).toLowerCase()
@@ -2415,14 +2681,21 @@ async function promoteImageFromTemp(imageId, tab) {
             ctx.status = 404
         }
     }
-    
+
     async function serveImage(ctx) {
         const params = ctx.params || {}
         const tab = params.tab
-        const imageId = params.imageId
-        
+        let imageId = params.imageId
+
         if (!tab || !imageId) { ctx.status = 404; return }
-        
+
+        try {
+            imageId = decodeURIComponent(imageId)
+            if (imageId.includes('%')) {
+                imageId = decodeURIComponent(imageId)
+            }
+        } catch (e) {}
+
         let filePath = path.join(getTabImgDir(tab), imageId)
         try {
             await fs.stat(filePath)
@@ -2434,7 +2707,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 ctx.status = 404; return
             }
         }
-        
+
         try {
             const ext = path.extname(imageId).slice(1).toLowerCase()
             const mimeTypes = {
@@ -2451,14 +2724,21 @@ async function promoteImageFromTemp(imageId, tab) {
             ctx.status = 404
         }
     }
-    
+
     async function serveThumb(ctx) {
         const params = ctx.params || {}
         const tab = params.tab
-        const thumbId = params.thumbId
-        
+        let thumbId = params.thumbId
+
         if (!tab || !thumbId) { ctx.status = 404; return }
-        
+
+        try {
+            thumbId = decodeURIComponent(thumbId)
+            if (thumbId.includes('%')) {
+                thumbId = decodeURIComponent(thumbId)
+            }
+        } catch (e) {}
+
         let thumbPath = path.join(getTabThumbDir(tab), thumbId)
         try {
             await fs.stat(thumbPath)
@@ -2470,7 +2750,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 ctx.status = 404; return
             }
         }
-        
+
         try {
             const ext = path.extname(thumbId).slice(1).toLowerCase()
             if (ext === 'gif') {
@@ -2485,13 +2765,20 @@ async function promoteImageFromTemp(imageId, tab) {
             ctx.status = 404
         }
     }
-    
+
     async function serveMov(ctx) {
         const params = ctx.params || {}
         const tab = params.tab
-        const fileId = params.fileId
+        let fileId = params.fileId
         if (!tab || !fileId) { ctx.status = 404; return }
-        
+
+        try {
+            fileId = decodeURIComponent(fileId)
+            if (fileId.includes('%')) {
+                fileId = decodeURIComponent(fileId)
+            }
+        } catch (e) {}
+
         let filePath = path.join(getTabMovDir(tab), fileId)
         try {
             await fs.stat(filePath)
@@ -2503,13 +2790,13 @@ async function promoteImageFromTemp(imageId, tab) {
                 ctx.status = 404; return
             }
         }
-        
+
         try {
             const stat = await fs.stat(filePath)
             const fileSize = stat.size
             const ext = path.extname(fileId).slice(1).toLowerCase()
-            const mimeMap = { 
-                'mp4': 'video/mp4', 'webm': 'video/webm', 
+            const mimeMap = {
+                'mp4': 'video/mp4', 'webm': 'video/webm',
                 'ogg': 'video/ogg', 'mov': 'video/quicktime',
                 'mp3': 'audio/mpeg', 'wav': 'audio/wav',
                 'flac': 'audio/flac', 'aac': 'audio/aac',
@@ -2517,35 +2804,35 @@ async function promoteImageFromTemp(imageId, tab) {
             }
             ctx.type = mimeMap[ext] || 'application/octet-stream'
             ctx.set('Accept-Ranges', 'bytes')
-            
+
             const originalName = await getFileName(tab, 'mov', fileId).catch(() => fileId)
             ctx.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(originalName)}`)
-            
+
             const range = ctx.get('Range')
             if (range) {
                 const parts = range.replace(/bytes=/, '').split('-')
                 const start = parseInt(parts[0], 10)
                 const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
-                
+
                 if (start >= fileSize) {
                     ctx.status = 416
                     ctx.set('Content-Range', `bytes */${fileSize}`)
                     return
                 }
-                
+
                 const chunksize = (end - start) + 1
-                
+
                 ctx.status = 206
                 ctx.set('Content-Range', `bytes ${start}-${end}/${fileSize}`)
                 ctx.set('Content-Length', String(chunksize))
-                
+
                 const stream = fss.createReadStream(filePath, { start, end })
                 ctx.body = stream
             } else {
                 ctx.set('Content-Length', String(fileSize))
                 ctx.body = fss.createReadStream(filePath)
             }
-            
+
             ctx.set('Cache-Control', 'public, max-age=3600')
         } catch { ctx.status = 404 }
     }
@@ -2554,57 +2841,49 @@ async function promoteImageFromTemp(imageId, tab) {
         const params = ctx.params || {}
         const tab = params.tab
         let fileId = params.fileId
-        
+
         if (!tab || !fileId) { ctx.status = 404; return }
-        
+
         try {
             fileId = decodeURIComponent(fileId)
+            if (fileId.includes('%')) {
+                fileId = decodeURIComponent(fileId)
+            }
         } catch (e) {}
-        
+
         let filePath = path.join(getTabAttDir(tab), fileId)
         try {
             await fs.stat(filePath)
         } catch {
-            const encodedFileId = encodeURIComponent(fileId)
-            filePath = path.join(getTabAttDir(tab), encodedFileId)
+            filePath = path.join(TEMP_DIR, fileId)
             try {
                 await fs.stat(filePath)
             } catch {
-                filePath = path.join(TEMP_DIR, fileId)
-                try {
-                    await fs.stat(filePath)
-                } catch {
-                    filePath = path.join(TEMP_DIR, encodedFileId)
-                    try {
-                        await fs.stat(filePath)
-                    } catch {
-                        ctx.status = 404
-                        ctx.body = { error: 'File not found' }
-                        return
-                    }
-                }
+                ctx.status = 404
+                ctx.body = { error: 'File not found' }
+                return
             }
         }
-        
+
         try {
             const originalName = await getFileName(tab, 'att', fileId).catch(() => fileId)
-            
+
             ctx.type = 'application/octet-stream'
             ctx.set('Cache-Control', 'no-cache')
-            
+
             const encodedName = encodeURIComponent(originalName)
                 .replace(/['()]/g, escape)
                 .replace(/\*/g, '%2A');
-            
-            ctx.set('Content-Disposition', 
+
+            ctx.set('Content-Disposition',
                 `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
             );
-            
+
             ctx.set('Access-Control-Allow-Origin', '*')
             ctx.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
             ctx.set('Access-Control-Allow-Headers', 'Content-Type')
             ctx.set('X-Content-Type-Options', 'nosniff')
-            
+
             ctx.body = await fs.readFile(filePath)
             ctx.status = 200
         } catch (err) {
@@ -2612,12 +2891,12 @@ async function promoteImageFromTemp(imageId, tab) {
             ctx.status = 404
         }
     }
-    
+
     return {
         async middleware(ctx) {
             const p = ctx.path
             const method = ctx.method.toUpperCase()
-            
+
             if (p.startsWith('/~/notes/temp/')) {
                 const fileId = p.replace('/~/notes/temp/', '')
                 if (fileId) {
@@ -2626,7 +2905,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 } else { ctx.status = 404 }
                 return
             }
-            
+
             if (p.startsWith('/~/notes/thumb/')) {
                 const parts = p.replace('/~/notes/thumb/', '').split('/')
                 if (parts.length >= 2) {
@@ -2635,7 +2914,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 } else { ctx.status = 404 }
                 return
             }
-            
+
             if (p.startsWith('/~/notes/img/')) {
                 const parts = p.replace('/~/notes/img/', '').split('/')
                 if (parts.length >= 2) {
@@ -2646,7 +2925,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 }
                 return
             }
-            
+
             if (p.startsWith('/~/notes/mov/')) {
                 const parts = p.replace('/~/notes/mov/', '').split('/')
                 if (parts.length >= 2) {
@@ -2655,7 +2934,7 @@ async function promoteImageFromTemp(imageId, tab) {
                 } else { ctx.status = 404 }
                 return
             }
-            
+
             if (p.startsWith('/~/notes/att/')) {
                 const parts = p.replace('/~/notes/att/', '').split('/')
                 if (parts.length >= 2) {
@@ -2664,9 +2943,9 @@ async function promoteImageFromTemp(imageId, tab) {
                 } else { ctx.status = 404 }
                 return
             }
-            
+
             if (!p.startsWith(API_BASE)) return
-            
+
             if (p === `${API_BASE}check` && method === 'GET') { await checkAccess(ctx); return }
             if (p === `${API_BASE}list` && method === 'GET') { await listNotes(ctx); return }
             if (p === `${API_BASE}get-full` && method === 'GET') { await getNoteFull(ctx); return }
@@ -2682,7 +2961,7 @@ async function promoteImageFromTemp(imageId, tab) {
             if (p === `${API_BASE}update-category-name` && method === 'POST') { await updateCategoryName(ctx); return }
             if (p === `${API_BASE}update-category-order` && method === 'POST') { await updateCategoryOrder(ctx); return }
             if (p === `${API_BASE}upload` && method === 'POST') { await uploadFileToTemp(ctx); return }
-            
+
             if (p === `${ADMIN_API}overview` && method === 'GET') { await adminOverview(ctx); return }
             if (p === `${ADMIN_API}export` && method === 'GET') { await adminExport(ctx); return }
             if (p === `${ADMIN_API}import` && method === 'POST') { await adminImport(ctx); return }
