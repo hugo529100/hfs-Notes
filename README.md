@@ -4,6 +4,16 @@ Before reading the AI-generated content below, let me briefly introduce this plu
 
 
 
+https://github.com/user-attachments/assets/6e757f40-4c51-4dc4-843a-9656fc8ee34a
+
+
+
+https://github.com/user-attachments/assets/cd46bdbd-e441-4f45-9e73-51c03da18dcd
+
+
+
+
+
 
 Notes Plugin - User Guide
 📝 Introduction
