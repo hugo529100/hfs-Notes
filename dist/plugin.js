@@ -268,7 +268,7 @@ exports.init = async api => {
     const TABS_MAP_FILE = path.join(TABS_DIR, '_tabs_map.json')
 
     const SPAM_DELAY = 1000
-    const MAX_STORAGE_WARNING = 400
+    const MAX_STORAGE_WARNING = 99999999
     const MAX_IMG_SIZE = 80 * 1024 * 1024
     const MAX_FILE_SIZE = 200 * 1024 * 1024
     const TEMP_FILE_TTL = 60 * 1000
@@ -440,9 +440,6 @@ exports.init = async api => {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
     }
 
-    // ============================================
-    // 修正：把 % 替换为 _，避免 decodeURIComponent 抛错
-    // ============================================
     function generateFileId(originalName) {
         const now = new Date()
         const dateStr = now.getFullYear() +
@@ -1076,7 +1073,6 @@ exports.init = async api => {
             await generateThumbnail(imgBuffer, thumbPath)
             await fs.copyFile(tempPath, finalPath)
 
-            // 修正：删除临时缩略图
             const tempThumbPath = path.join(THUMB_BASE_DIR, '_temp', imageId)
             fs.unlink(tempThumbPath).catch(() => {})
 
@@ -1187,9 +1183,6 @@ exports.init = async api => {
         }
     }
 
-    // ============================================
-    // 修正：同时清理 TEMP_DIR 和 THUMB_BASE_DIR/_temp
-    // ============================================
     async function cleanupTempFiles() {
         try {
             const cutoff = Date.now() - TEMP_FILE_TTL
@@ -1205,7 +1198,6 @@ exports.init = async api => {
                 } catch {}
             }
 
-            // 清理临时缩略图
             const tempThumbDir = path.join(THUMB_BASE_DIR, '_temp')
             const thumbFiles = await fs.readdir(tempThumbDir).catch(() => [])
             for (const file of thumbFiles) {
@@ -2029,6 +2021,69 @@ exports.init = async api => {
         })
 
         api.notifyClient('notes', 'updateNote', { ts, tab, m: localizedM, starred: note.starred || false, collapsed: note.collapsed || false })
+        ctx.status = 200
+    }
+
+    // ============================================
+    // 新增：重命名笔记时间戳
+    // 去重策略：若目标时间戳已存在，则每次 +1 秒
+    // 文件安全：先复制为新文件，再改索引，最后删旧文件
+    // ============================================
+    async function renameNoteTs(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+
+        let body = ctx.state.params || ctx.request?.body || {}
+        const { tab, oldTs, newTs } = body
+        if (!tab || !oldTs || !newTs) { ctx.status = 400; return }
+        if (oldTs === newTs) { ctx.body = { ok: true, oldTs, newTs }; ctx.status = 200; return }
+
+        const index = await loadTabIndex(tab)
+        if (!index.notes[oldTs]) { ctx.status = 404; return }
+
+        const meta = index.notes[oldTs]
+        const content = await loadNoteContent(tab, oldTs)
+        if (content === null) { ctx.status = 404; return }
+
+        // 去重：已存在则每次 +1 秒，直到找到空位
+        let finalTs = newTs
+        let d = new Date(finalTs)
+        if (isNaN(d.getTime())) { ctx.status = 400; ctx.body = { error: 'Invalid timestamp' }; return }
+
+        let guard = 0
+        while (index.notes[finalTs] && finalTs !== oldTs && guard < 86400) {
+            d = new Date(d.getTime() + 1000)
+            finalTs = d.toISOString()
+            guard++
+        }
+        if (index.notes[finalTs] && finalTs !== oldTs) {
+            ctx.status = 409
+            ctx.body = { error: 'No available timestamp slot' }
+            return
+        }
+
+        // 文件安全：复制旧文件为新文件（沿用原有命名规则 getNoteFilePath）
+        const oldPath = getNoteFilePath(tab, oldTs)
+        const newPath = getNoteFilePath(tab, finalTs)
+
+        try {
+            await fs.copyFile(oldPath, newPath)
+        } catch (e) {
+            ctx.status = 500
+            ctx.body = { error: 'Failed to copy note file' }
+            return
+        }
+
+        // 更新索引
+        delete index.notes[oldTs]
+        index.notes[finalTs] = meta
+        await saveTabIndex(tab, index)
+
+        // 删除旧文件
+        await deleteNoteFile(tab, oldTs)
+
+        api.notifyClient('notes', 'renameNoteTs', { tab, oldTs, newTs: finalTs })
+        ctx.body = { ok: true, oldTs, newTs: finalTs }
         ctx.status = 200
     }
 
@@ -2952,6 +3007,7 @@ exports.init = async api => {
             if (p === `${API_BASE}tabs` && method === 'GET') { await getTabInfo(ctx); return }
             if (p === `${API_BASE}add` && method === 'POST') { await addNote(ctx); return }
             if (p === `${API_BASE}update` && method === 'POST') { await updateNote(ctx); return }
+            if (p === `${API_BASE}rename-ts` && method === 'POST') { await renameNoteTs(ctx); return }
             if (p === `${API_BASE}toggle-star` && method === 'POST') { await toggleStar(ctx); return }
             if (p === `${API_BASE}toggle-collapse` && method === 'POST') { await toggleCollapse(ctx); return }
             if (p === `${API_BASE}delete` && method === 'POST') { await deleteNote(ctx); return }

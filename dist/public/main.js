@@ -34,7 +34,6 @@ function safeFileName(name, maxLen = 60) {
     let baseName = lastDot > 0 ? name.slice(0, lastDot) : name;
     let ext = lastDot > 0 ? name.slice(lastDot) : '';
 
-    // 只保留 ASCII 字母数字、-、_、.，其余替换为 _
     baseName = baseName
         .replace(/[^\w\-.]/g, '_')
         .replace(/_+/g, '_')
@@ -43,25 +42,46 @@ function safeFileName(name, maxLen = 60) {
     if (!baseName) baseName = 'file';
     if (baseName.length > maxLen) baseName = baseName.slice(0, maxLen);
 
-    // 扩展名只保留字母数字和点
     ext = ext.replace(/[^\w.]/g, '');
     if (ext.length > 10) ext = ext.slice(0, 10);
 
     return baseName + ext;
 }
 
-// 用于 displayName：去掉换行、方括号、冒号等会破坏 [mov:id:name] 结构的字符
 function safeDisplayName(name, maxLen = 120) {
     if (!name) return 'file';
     let s = String(name)
         .replace(/[\r\n\t]/g, ' ')
-        .replace(/[\[\]]/g, '')   // 防止破坏标记结构
-        .replace(/[:]/g, '_')      // 冒号会破坏 mov 标记
+        .replace(/[\[\]]/g, '')
+        .replace(/[:]/g, '_')
         .replace(/\s+/g, ' ')
         .trim();
     if (!s) s = 'file';
     if (s.length > maxLen) s = s.slice(0, maxLen) + '…';
     return s;
+}
+
+// ============================================
+// 字数统计：中文单字计 1，英文单词计 1，链接不计入
+// ============================================
+function countWords(text) {
+    if (!text) return 0;
+    let s = String(text).replace(/https?:\/\/[^\s<>"'\)\]]+/gi, ' ');
+    const cjkRegex = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g;
+    const wordRegex = /[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*/g;
+    const cjkCount = (s.match(cjkRegex) || []).length;
+    const wordCount = (s.match(wordRegex) || []).length;
+    return cjkCount + wordCount;
+}
+
+// ============================================
+// 工具：把 ISO 时间戳转成 datetime-local 的 value
+// ============================================
+function toLocalDatetimeValue(isoTs) {
+    const d = new Date(isoTs);
+    if (isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 async function uploadFile(file) {
@@ -71,18 +91,16 @@ async function uploadFile(file) {
             try {
                 const rawName = file.name;
 
-                // ===== 安全化 =====
-                const safeName = safeFileName(rawName);         // 用于生成 fileId
-                const displayName = safeDisplayName(rawName);   // 用于显示 & 写入笔记
-                // ==================
+                const safeName = safeFileName(rawName);
+                const displayName = safeDisplayName(rawName);
 
                 const res = await fetch('/~/api/notes/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        name: safeName,          // fileId 基于安全名
+                        name: safeName,
                         data: reader.result,
-                        displayName: displayName // 显示名也安全化
+                        displayName: displayName
                     })
                 });
                 if (!res.ok) {
@@ -122,9 +140,6 @@ async function uploadFile(file) {
         });
     }
 
-    // ============================================
-    // 修正：对 tab 和 fileId 进行 URL 编码
-    // ============================================
     function getVideoThumbPath(tab, fileId, thumbFormat) {
         const ext = fileId.split('.').pop();
         const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'wmv', 'flv'];
@@ -202,7 +217,7 @@ async function uploadFile(file) {
     }
 
     // ========== NoteItem 组件 ==========
-    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat, isVisible = false, onEditingChange, isEditingThis, onPaste }) {
+    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat, isVisible = false, onEditingChange, isEditingThis, onPaste, onRenameTs }) {
         const { u, ts, starred, collapsed } = note;
         const isPending = note._pending === true;
         const summaryText = note.s || (note.m ? note.m.substring(0, 200) : '');
@@ -223,6 +238,11 @@ async function uploadFile(file) {
         const [loadingFull, setLoadingFull] = useState(false);
         const [isContentFullyLoaded, setIsContentFullyLoaded] = useState(initialFullContent !== null);
 
+        // ===== 编辑时间戳相关 =====
+        const [editingTs, setEditingTs] = useState(false);
+        const [savingTs, setSavingTs] = useState(false);
+        const tsInputRef = useRef(null);
+
         // ===== iPad 双击支持 refs =====
         const lastTapRef = useRef(0);
         const tapTimerRef = useRef(null);
@@ -233,7 +253,6 @@ async function uploadFile(file) {
         const effectiveTab = tabName || activeTab;
         const effectiveCollapsed = localCollapsed !== null ? localCollapsed : (collapsed || false);
 
-        // ===== 游客可下载判断 =====
         const canGuestDownload = currentGuest &&
             Array.isArray(publicTabsList) &&
             publicTabsList.includes(effectiveTab);
@@ -243,6 +262,7 @@ async function uploadFile(file) {
                 loadFullContentForEdit();
             } else if (!isEditingThis && editing) {
                 setEditing(false);
+                setEditingTs(false);
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
                 globalEditTextareaRef = null;
@@ -266,6 +286,8 @@ async function uploadFile(file) {
             setFullContent(initialFullContent);
             setLoadingFull(false);
             setIsContentFullyLoaded(initialFullContent !== null);
+            setEditingTs(false);
+            setSavingTs(false);
             if (videoRef.current) {
                 videoRef.current.pause();
                 videoRef.current.style.display = 'none';
@@ -317,7 +339,14 @@ async function uploadFile(file) {
             };
         }, [editing, ts, effectiveTab, editVal]);
 
-        // ===== 清理触摸定时器 =====
+        // ===== 时间戳编辑输入框自动聚焦 =====
+        useEffect(() => {
+            if (editingTs && tsInputRef.current) {
+                tsInputRef.current.focus();
+                try { tsInputRef.current.showPicker?.(); } catch {}
+            }
+        }, [editingTs]);
+
         useEffect(() => {
             return () => {
                 if (tapTimerRef.current) {
@@ -428,65 +457,98 @@ async function uploadFile(file) {
             }
         }, [effectiveCollapsed, fullContent, hasMoreContent, loadFullContent, isPending]);
 
-const handleDblClick = async (e) => {
-    if (isPending) return;
-    if (isFullscreenColumn) return;
+        const handleDblClick = async (e) => {
+            if (isPending) return;
+            if (isFullscreenColumn) return;
 
-    if (e && e.target) {
-        const target = e.target;
-        if (target.closest('video, audio, source, .note-mov-wrapper, .note-mov-player, .note-audio-wrapper, .note-audio-player')) {
-            return;
-        }
-    }
+            if (e && e.target) {
+                const target = e.target;
+                if (target.closest('video, audio, source, .note-mov-wrapper, .note-mov-player, .note-audio-wrapper, .note-audio-player')) {
+                    return;
+                }
+            }
 
-    if (isOwner && !currentGuest) {
-        if (globalEditingNoteTs && globalEditingNoteTs !== ts) {
-        }
-        loadFullContentForEdit();
-    }
-};
+            if (isOwner && !currentGuest) {
+                if (globalEditingNoteTs && globalEditingNoteTs !== ts) {
+                }
+                loadFullContentForEdit();
+            }
+        };
 
-        // ===== iPad 双击编辑支持 =====
-const handleTouchEnd = useCallback((e) => {
-    if (isPending) return;
-    if (!('ontouchstart' in window)) return;
-    if (isFullscreenColumn) return;
-    if (!(isOwner && !currentGuest)) return;
+        const handleTouchEnd = useCallback((e) => {
+            if (isPending) return;
+            if (!('ontouchstart' in window)) return;
+            if (isFullscreenColumn) return;
+            if (!(isOwner && !currentGuest)) return;
 
-    const target = e.target;
-    if (target.closest('button, a, input, textarea, audio, video, source, .note-inline-img, .note-cover-image, .note-mov-wrapper, .note-mov-player, .note-audio-wrapper, .note-audio-player')) {
-        return;
-    }
+            const target = e.target;
+            if (target.closest('button, a, input, textarea, audio, video, source, .note-inline-img, .note-cover-image, .note-mov-wrapper, .note-mov-player, .note-audio-wrapper, .note-audio-player')) {
+                return;
+            }
 
-    const now = Date.now();
-    const DOUBLE_TAP_DELAY = 300;
+            const now = Date.now();
+            const DOUBLE_TAP_DELAY = 300;
 
-    if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
-        if (tapTimerRef.current) {
-            clearTimeout(tapTimerRef.current);
-            tapTimerRef.current = null;
-        }
-        lastTapRef.current = 0;
-        e.preventDefault();
-        loadFullContentForEdit();
-    } else {
-        lastTapRef.current = now;
-        if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
-        tapTimerRef.current = setTimeout(() => {
-            tapTimerRef.current = null;
-        }, DOUBLE_TAP_DELAY);
-    }
-}, [isFullscreenColumn, isOwner, currentGuest, loadFullContentForEdit, isPending]);
+            if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
+                if (tapTimerRef.current) {
+                    clearTimeout(tapTimerRef.current);
+                    tapTimerRef.current = null;
+                }
+                lastTapRef.current = 0;
+                e.preventDefault();
+                loadFullContentForEdit();
+            } else {
+                lastTapRef.current = now;
+                if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+                tapTimerRef.current = setTimeout(() => {
+                    tapTimerRef.current = null;
+                }, DOUBLE_TAP_DELAY);
+            }
+        }, [isFullscreenColumn, isOwner, currentGuest, loadFullContentForEdit, isPending]);
+
+        // ===== 保存时间戳：返回最终 ts（成功）或原 ts（失败/无变化）=====
+        const saveTs = useCallback(async () => {
+            if (savingTs) return ts;
+            const val = tsInputRef.current?.value;
+            if (!val) { setEditingTs(false); return ts; }
+            const newDate = new Date(val);
+            if (isNaN(newDate.getTime())) { setEditingTs(false); return ts; }
+            const newTs = newDate.toISOString();
+            if (newTs === ts) { setEditingTs(false); return ts; }
+
+            setSavingTs(true);
+            let finalTs = ts;
+            try {
+                if (typeof onRenameTs === 'function') {
+                    const result = await onRenameTs(ts, newTs);
+                    if (result) finalTs = result;
+                }
+            } catch {}
+            setSavingTs(false);
+            setEditingTs(false);
+            return finalTs;
+        }, [ts, onRenameTs, savingTs]);
+
+        const cancelEditTs = useCallback(() => {
+            setEditingTs(false);
+        }, []);
 
         const handleSave = () => {
             const trimmed = editVal.trim();
-            const doSave = () => {
+            const doSave = async () => {
+                let currentTs = ts;
+                if (editingTs) {
+                    currentTs = await saveTs();
+                }
+
                 if (trimmed) {
-                    onEdit(ts, trimmed);
+                    onEdit(currentTs, trimmed);
                     setFullContent(trimmed);
                     setIsContentFullyLoaded(true);
                 }
+
                 setEditing(false);
+                setEditingTs(false);
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
                 globalEditTextareaRef = null;
@@ -500,6 +562,7 @@ const handleTouchEnd = useCallback((e) => {
         const handleCancel = () => {
             const doCancel = () => {
                 setEditing(false);
+                setEditingTs(false);
                 globalEditingNoteTs = null;
                 globalEditingTab = null;
                 globalEditTextareaRef = null;
@@ -647,7 +710,6 @@ const handleTouchEnd = useCallback((e) => {
 
             return parts.map((part, i) => {
                 if (part.type === 'image') {
-                    // 修正：对 tab 和 imageId 编码
                     const imgBase = isEditMode ? `/~/notes/temp/` : `/~/notes/img/${encodeURIComponent(effectiveTab)}/`;
                     const thumbBase = `/~/notes/thumb/${encodeURIComponent(effectiveTab)}/`;
                     const fullUrl = imgBase + encodeURIComponent(part.imageId);
@@ -696,7 +758,6 @@ const handleTouchEnd = useCallback((e) => {
                         },
                         onError: function(e) {
                             const img = e.currentTarget;
-                            // 限制重试次数，避免无限 404 刷屏
                             let retryCount = parseInt(img.dataset.retryCount || '0', 10);
                             if (retryCount >= 2) {
                                 img.style.opacity = '1';
@@ -716,7 +777,6 @@ const handleTouchEnd = useCallback((e) => {
                 }
 
                 if (part.type === 'media') {
-                    // 修正：对 tab 和 fileId 编码
                     const movUrl = `/~/notes/mov/${encodeURIComponent(effectiveTab)}/${encodeURIComponent(part.fileId)}`;
                     const ext = part.fileId.split('.').pop()?.toLowerCase();
                     const audioExts = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg', 'oga'];
@@ -861,7 +921,6 @@ const handleTouchEnd = useCallback((e) => {
                             HFS.toast('Please login to download files', 'info');
                             return;
                         }
-                        // 修正：对 tab 和 fileId 编码
                         const url = `/~/notes/att/${encodeURIComponent(effectiveTab)}/${encodeURIComponent(part.fileId)}`;
                         const iframe = document.createElement('iframe');
                         iframe.style.display = 'none';
@@ -1131,6 +1190,7 @@ const handleTouchEnd = useCallback((e) => {
         };
 
         if (editing) {
+            const wordCount = countWords(editVal);
             return h('div', {
                 className: `note-item note-item-editing ${starred ? 'note-item-starred' : ''}`,
                 ref: noteItemRef,
@@ -1139,8 +1199,43 @@ const handleTouchEnd = useCallback((e) => {
             },
                 h('div', { className: 'note-header-row' },
                     h('div', { className: 'note-meta' },
-                        h('span', { className: 'note-ts' }, new Date(ts).toLocaleString()),
-                        h('span', { className: 'note-author' }, ' - ' + (u || 'Guest'))
+                        editingTs ?
+                            h('span', { className: 'note-ts-edit-group' },
+                                h('input', {
+                                    ref: tsInputRef,
+                                    type: 'datetime-local',
+                                    className: 'note-ts-input',
+                                    defaultValue: toLocalDatetimeValue(ts),
+                                    disabled: savingTs,
+                                    onKeyDown: (e) => {
+                                        if (e.key === 'Enter') { e.preventDefault(); saveTs(); }
+                                        if (e.key === 'Escape') { e.preventDefault(); cancelEditTs(); }
+                                    }
+                                }),
+                                h('button', {
+                                    type: 'button',
+                                    className: 'note-ts-confirm-btn',
+                                    title: 'Confirm',
+                                    disabled: savingTs,
+                                    onMouseDown: (e) => e.preventDefault(),
+                                    onClick: (e) => { e.stopPropagation(); saveTs(); }
+                                }, savingTs ? '…' : '✓'),
+                                h('button', {
+                                    type: 'button',
+                                    className: 'note-ts-cancel-btn',
+                                    title: 'Cancel',
+                                    disabled: savingTs,
+                                    onMouseDown: (e) => e.preventDefault(),
+                                    onClick: (e) => { e.stopPropagation(); cancelEditTs(); }
+                                }, '✕')
+                            ) :
+                            h('span', {
+                                className: 'note-ts note-ts-editable',
+                                title: 'Click to edit timestamp',
+                                onClick: () => setEditingTs(true)
+                            }, new Date(ts).toLocaleString()),
+                        h('span', { className: 'note-author' }, ' - ' + (u || 'Guest')),
+                        h('span', { className: 'note-word-count' }, ` (${wordCount} 字)`)
                     ),
                     h('div', { className: 'note-edit-actions' },
                         !currentGuest && h('button', {
@@ -1206,7 +1301,6 @@ const handleTouchEnd = useCallback((e) => {
             coverExt = coverImageId.split('.').pop()?.toLowerCase();
             coverIsGif = coverExt === 'gif';
             coverHasThumb = !coverIsGif && thumbMap && thumbMap[coverImageId];
-            // 修正：对 tab 和 coverImageId 编码
             coverSrc = coverHasThumb ?
                 `/~/notes/thumb/${encodeURIComponent(effectiveTab)}/${encodeURIComponent(coverImageId)}` :
                 `/~/notes/img/${encodeURIComponent(effectiveTab)}/${encodeURIComponent(coverImageId)}`;
@@ -1530,6 +1624,9 @@ const handleTouchEnd = useCallback((e) => {
         const esRef = useRef(null);
         const loadNotesAbortControllerRef = useRef(null);
 
+        // ===== 保存后往返切 tab 时，记录要定位的 ts =====
+        const scrollToNoteAfterTabSwitchRef = useRef(null);
+
         const tabCacheRef = useRef({});
 
         const inputRef = useRef(null);
@@ -1548,11 +1645,9 @@ const handleTouchEnd = useCallback((e) => {
         const fullContentFallbackRef = useRef({});
         const [sending, setSending] = useState(false);
 
-        // ===== pending 占位笔记相关 =====
         const pendingNoteTsRef = useRef(null);
         const pendingUsernameRef = useRef('Guest');
 
-        // 从 HFS 快照拿当前用户名（用于 pending 笔记的 u 字段）
         try {
             const snap = HFS.useSnapState();
             if (snap && snap.username) {
@@ -1689,7 +1784,6 @@ const handleTouchEnd = useCallback((e) => {
             globalSetEditValue = null;
             globalActiveTab = '';
 
-            // 切换 tab 时清掉 pending 占位
             pendingNoteTsRef.current = null;
 
             try {
@@ -1698,21 +1792,30 @@ const handleTouchEnd = useCallback((e) => {
                 }
             } catch {}
 
-            shouldAutoScrollRef.current = true;
+            const pendingScrollTs = scrollToNoteAfterTabSwitchRef.current;
+            if (pendingScrollTs) {
+                shouldAutoScrollRef.current = false;
+            } else {
+                shouldAutoScrollRef.current = true;
+            }
+
             loadNotes(activeTab, false);
             setupSSE(activeTab);
 
-            let scrollAttempts = 0;
-            const maxAttempts = 3;
-            const persistentScroll = () => {
-                if (isFullscreen) return;
-                if (scrollAttempts >= maxAttempts) return;
-                if (!listRef.current) return;
-                listRef.current.scrollTop = listRef.current.scrollHeight;
-                scrollAttempts++;
-                setTimeout(persistentScroll, 100);
-            };
-            setTimeout(persistentScroll, 300);
+            if (!pendingScrollTs) {
+                let scrollAttempts = 0;
+                const maxAttempts = 3;
+                const persistentScroll = () => {
+                    if (isFullscreen) return;
+                    if (scrollAttempts >= maxAttempts) return;
+                    if (!listRef.current) return;
+                    if (scrollToNoteAfterTabSwitchRef.current) return;
+                    listRef.current.scrollTop = listRef.current.scrollHeight;
+                    scrollAttempts++;
+                    setTimeout(persistentScroll, 100);
+                };
+                setTimeout(persistentScroll, 300);
+            }
         }, [activeTab, isFullscreen]);
 
         useEffect(() => {
@@ -1824,6 +1927,19 @@ const handleTouchEnd = useCallback((e) => {
                         return;
                     }
 
+                    // ===== 时间戳重命名 =====
+                    if (e === 'renameNoteTs') {
+                        if (data.tab !== activeTabRef.current) return;
+                        const finalTs = data.newTs || data.oldTs;
+                        setNotes(prev => prev.map(n =>
+                            n.ts === data.oldTs ? { ...n, ts: finalTs, _rev: Date.now() } : n
+                        ));
+                        setSearchResults(prev => prev.map(n =>
+                            n.ts === data.oldTs ? { ...n, ts: finalTs, _rev: Date.now() } : n
+                        ));
+                        return;
+                    }
+
                     if (!data.tab) return;
                     if (data.tab !== activeTabRef.current) return;
 
@@ -1837,7 +1953,6 @@ const handleTouchEnd = useCallback((e) => {
                             m: data.m
                         };
                         setNotes(prev => {
-                            // 优先用真实笔记替换 pending 占位
                             const pendingTs = pendingNoteTsRef.current;
                             if (pendingTs) {
                                 const idx = prev.findIndex(n => n.ts === pendingTs);
@@ -1862,12 +1977,14 @@ const handleTouchEnd = useCallback((e) => {
                             }, 100);
                         }
                     } else if (e === 'updateNote') {
+                        // 同步更新 note 内容，并递增 _rev 强制重挂载
                         setNotes(prev => prev.map(n => n.ts === data.ts ? {
                             ...n,
                             m: data.m,
                             s: data.m ? data.m.substring(0, 200) : '',
                             hasMore: data.m ? data.m.length > 200 : false,
-                            collapsed: data.collapsed
+                            collapsed: data.collapsed,
+                            _rev: Date.now()
                         } : n));
                     } else if (e === 'toggleStar') {
                         setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, starred: data.starred } : n));
@@ -2022,7 +2139,6 @@ const handleTouchEnd = useCallback((e) => {
             };
         }, []);
 
-        // ===== 剪贴板粘贴处理 =====
         const handlePaste = useCallback(async (e) => {
             if (isGuest) return;
 
@@ -2042,7 +2158,6 @@ const handleTouchEnd = useCallback((e) => {
 
             const target = e.target;
 
-            // 场景 A：剪贴板含图片二进制 → 上传
             if (imageFiles.length > 0) {
                 e.preventDefault();
                 const start = target.selectionStart ?? 0;
@@ -2081,7 +2196,6 @@ const handleTouchEnd = useCallback((e) => {
                 return;
             }
 
-            // 场景 B：纯文本 / 富文本 → 提取文本 + 图片 URL
             const html = clipboard.getData('text/html');
             const plain = clipboard.getData('text/plain');
 
@@ -2478,7 +2592,6 @@ const handleTouchEnd = useCallback((e) => {
             const trim = currentM.trim();
             if (!trim) return;
 
-            // 立即锁 + 立即清空
             setSending(true);
             sm('');
             try { localStorage.removeItem(CACHE_INPUT_TEXT); } catch {}
@@ -2486,7 +2599,6 @@ const handleTouchEnd = useCallback((e) => {
                 inputRef.current.style.height = 'auto';
             }
 
-            // ===== 插入 pending 占位笔记 =====
             const pendingTs = `__pending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
             pendingNoteTsRef.current = pendingTs;
             const pendingUser = pendingUsernameRef.current || 'Guest';
@@ -2508,7 +2620,6 @@ const handleTouchEnd = useCallback((e) => {
                     listRef.current.scrollTop = listRef.current.scrollHeight;
                 }
             }, 30);
-            // ===== pending 插入结束 =====
 
             HFS.toast('Please wait Localizing external media...', 'info');
 
@@ -2542,7 +2653,6 @@ const handleTouchEnd = useCallback((e) => {
 
                     shouldAutoScrollRef.current = true;
                     setTimeout(() => inputRef.current?.focus(), 50);
-                    // 注意：这里不删 pending，等 SSE newNote 到达后替换
                 } catch (e) {
                     sm(currentM);
                     try { localStorage.setItem(CACHE_INPUT_TEXT, currentM); } catch {}
@@ -2551,7 +2661,6 @@ const handleTouchEnd = useCallback((e) => {
                     if (pendingNoteTsRef.current === pendingTs) pendingNoteTsRef.current = null;
                 } finally {
                     setSending(false);
-                    // 兜底：如果 8 秒后 pending 还在（SSE 没来/失败），就清理掉
                     setTimeout(() => {
                         if (pendingNoteTsRef.current === pendingTs) {
                             setNotes(prev => prev.filter(n => n.ts !== pendingTs));
@@ -2563,6 +2672,64 @@ const handleTouchEnd = useCallback((e) => {
             doSend();
         }, [sanitizeText, editingNoteTs, sending]);
 
+        // ===== 以「条目时间文字」为锚点定位 =====
+        const scrollToNoteByTs = useCallback((targetTs, attempts = 20) => {
+            if (!targetTs) return;
+            const container = listRef.current;
+            if (!container) return;
+
+            const selector = `[data-note-ts="${CSS.escape(targetTs)}"]`;
+            const itemEl = container.querySelector(selector);
+
+            if (!itemEl) {
+                if (attempts <= 0) return;
+                setTimeout(() => scrollToNoteByTs(targetTs, attempts - 1), 80);
+                return;
+            }
+
+            const anchorEl =
+                itemEl.querySelector('.note-ts') ||
+                itemEl.querySelector('.note-footer-ts') ||
+                itemEl;
+
+            if (!anchorEl || !anchorEl.isConnected) {
+                if (attempts <= 0) return;
+                setTimeout(() => scrollToNoteByTs(targetTs, attempts - 1), 80);
+                return;
+            }
+
+            anchorEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+
+            let correctionCount = 0;
+            const MAX_CORRECTIONS = 3;
+            const recheck = () => {
+                correctionCount++;
+                if (correctionCount > MAX_CORRECTIONS) return;
+                const el = listRef.current?.querySelector(selector);
+                if (!el) return;
+                const a =
+                    el.querySelector('.note-ts') ||
+                    el.querySelector('.note-footer-ts') ||
+                    el;
+                if (!a || !a.isConnected) return;
+
+                const c = listRef.current;
+                if (!c) return;
+                const rect = a.getBoundingClientRect();
+                const cRect = c.getBoundingClientRect();
+                const outside =
+                    rect.top < cRect.top + 20 ||
+                    rect.bottom > cRect.bottom - 20;
+
+                if (outside) {
+                    a.scrollIntoView({ block: 'center', behavior: 'auto' });
+                }
+                setTimeout(recheck, 400);
+            };
+            setTimeout(recheck, 400);
+        }, []);
+
+        // ===== 编辑保存：本地更新 notes + _rev 强制重挂载 + 定位 =====
         const handleEdit = useCallback((ts, newText) => {
             const doEdit = async () => {
                 try {
@@ -2574,35 +2741,72 @@ const handleTouchEnd = useCallback((e) => {
                         HFS.toast('Localizing external media...', 'info');
                     }
 
+                    shouldAutoScrollRef.current = false;
+
+                    const currentTab = activeTabRef.current;
                     const res = await fetch('/~/api/notes/update', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ ts, tab: activeTab, m: sanitizedText })
+                        body: JSON.stringify({ ts, tab: currentTab, m: sanitizedText })
                     });
+
                     if (!res.ok) {
                         HFS.toast('Failed to update note', 'error');
-                    } else {
-                        const currentTab = activeTabRef.current || activeTab;
-                        if (currentTab && filteredTabs.length > 1) {
-                            const currentIndex = filteredTabs.indexOf(currentTab);
-                            if (currentIndex !== -1) {
-                                const nextTab = filteredTabs[(currentIndex + 1) % filteredTabs.length];
-                                if (nextTab) {
-                                    setActiveTab(nextTab);
-                                    setTimeout(() => {
-                                        setActiveTab(currentTab);
-                                        try {
-                                            localStorage.setItem(CACHE_ACTIVE_TAB, currentTab);
-                                        } catch {}
-                                    }, 50);
-                                }
-                            }
-                        }
+                        return;
                     }
-                } catch (e) {}
+
+                    // ===== 方案 1：本地立即更新 notes，并递增 _rev 强制重挂载 =====
+                    // _rev 变化 → React key 变化 → NoteItem 卸载重挂 → 重新 loadFullContent → 拿到最新内容
+                    setNotes(prev => prev.map(n => n.ts === ts ? {
+                        ...n,
+                        m: sanitizedText,
+                        s: sanitizedText.substring(0, 200),
+                        hasMore: sanitizedText.length > 200,
+                        _rev: Date.now()
+                    } : n));
+
+                    // ===== 方案 3：直接滚动定位到该 note，不再往返切 tab =====
+                    setTimeout(() => {
+                        scrollToNoteByTs(ts);
+                    }, 120);
+
+                } catch (e) {
+                    HFS.toast('Failed to update note', 'error');
+                }
             };
             doEdit();
-        }, [activeTab, sanitizeText, filteredTabs]);
+        }, [sanitizeText, scrollToNoteByTs]);
+
+        // ===== 重命名时间戳：成功后主动同步 editingNoteTs =====
+        const handleRenameTs = useCallback(async (oldTs, newTs) => {
+            const currentTab = activeTabRef.current;
+            if (!currentTab) return null;
+            try {
+                const res = await fetch('/~/api/notes/rename-ts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tab: currentTab, oldTs, newTs })
+                });
+                if (!res.ok) {
+                    HFS.toast('Failed to update timestamp', 'error');
+                    return null;
+                }
+                const data = await res.json().catch(() => ({}));
+                const finalTs = data.newTs || newTs;
+
+                // 主动把 editingNoteTs 从旧 ts 同步到新 ts
+                setEditingNoteTs(prev => (prev === oldTs ? finalTs : prev));
+
+                // 本地同步 notes 的 ts，并递增 _rev
+                setNotes(prev => prev.map(n => n.ts === oldTs ? { ...n, ts: finalTs, _rev: Date.now() } : n));
+
+                HFS.toast('Timestamp updated', 'success');
+                return finalTs;
+            } catch {
+                HFS.toast('Failed to update timestamp', 'error');
+                return null;
+            }
+        }, []);
 
         const handleToggleStar = useCallback((ts) => {
             fetch('/~/api/notes/toggle-star', {
@@ -3654,7 +3858,6 @@ const handleTouchEnd = useCallback((e) => {
 
         const isEditingMode = !isFullscreen && editingNoteTs !== null;
 
-        // ========== 渲染面板 ==========
         return h('div', {
             className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
             style: { fontSize: fontSize + 'px', overscrollBehavior: 'contain' },
@@ -3663,7 +3866,6 @@ const handleTouchEnd = useCallback((e) => {
             isDragging && h('div', { className: 'note-drag-overlay' },
                 h('div', { className: 'note-drag-overlay-content' }, dragOverlayContent)
             ),
-            // ========== 全屏模式头部 ==========
             isFullscreen ? h('div', {
                 className: 'note-panel-header',
                 ref: headerRef
@@ -3702,13 +3904,11 @@ const handleTouchEnd = useCallback((e) => {
                             onDoubleClick: () => handleCategoryDoubleClick(cat),
                             onMouseEnter: (e) => {
                                 if (renamingCategory !== cat) {
-
                                     e.currentTarget.style.background = 'transparent';
                                 }
                             },
                             onMouseLeave: (e) => {
                                 if (renamingCategory !== cat && !isActive) {
-
                                     e.currentTarget.style.background = 'transparent';
                                 }
                             },
@@ -3763,7 +3963,6 @@ const handleTouchEnd = useCallback((e) => {
                     }, '\u00D7')
                 )
             ) :
-            // ========== 非全屏模式头部 ==========
             h('div', {
                 className: 'note-panel-header',
                 ref: headerRef
@@ -3812,13 +4011,11 @@ const handleTouchEnd = useCallback((e) => {
                                 onDoubleClick: () => handleCategoryDoubleClick(cat),
                                 onMouseEnter: (e) => {
                                     if (renamingCategory !== cat) {
-
                                         e.currentTarget.style.background = 'transparent';
                                     }
                                 },
                                 onMouseLeave: (e) => {
                                     if (renamingCategory !== cat && !isActive) {
-
                                         e.currentTarget.style.background = 'transparent';
                                     }
                                 },
@@ -3869,7 +4066,6 @@ const handleTouchEnd = useCallback((e) => {
                     h('button', { className: 'note-close-btn', onClick: handleClose }, '\u00D7')
                 )
             ),
-            // 搜索栏 - 编辑模式下隐藏
             showSearch && !isFullscreen && !isEditingMode && h('div', { className: 'note-search-bar' },
                 h('input', {
                     ref: searchInputRef,
@@ -3940,7 +4136,6 @@ const handleTouchEnd = useCallback((e) => {
                     }, '\u25BC\uFE0E')
                 )
             ),
-            // Tab容器 - 编辑模式下隐藏
             !isFullscreen && !isEditingMode && h('div', { className: 'note-tabs-container' },
                 h('div', { className: 'note-tabs' },
                     filteredTabs.length > 0 ?
@@ -4025,7 +4220,7 @@ const handleTouchEnd = useCallback((e) => {
                                 }, isLoading ? '\u25B2 Loading older notes...' : '\u25B2 Load older notes'),
                                 tabData.notes.length > 0 ?
                                     tabData.notes.map((note, i) => h(NoteItem, {
-                                        key: note.ts || i,
+                                        key: `${note.ts}:${note._rev || 0}`,
                                         note,
                                         onDelete: handleDelete,
                                         onEdit: handleEdit,
@@ -4042,29 +4237,36 @@ const handleTouchEnd = useCallback((e) => {
                                         isFullscreenColumn: !isActive,
                                         thumbFormat: tabData.thumbFormat,
                                         onEditingChange: null,
-                                        onPaste: handlePaste
+                                        onPaste: handlePaste,
+                                        onRenameTs: handleRenameTs
                                     })) :
                                     h('div', { className: 'note-empty' }, isActive ? 'No notes' : 'Loading...')
                             )
                         );
                     })
                 ) :
-                // ========== 非全屏笔记列表 ==========
                 h('div', {
                     className: 'note-items',
                     ref: listRef,
                 },
-                    !isEditingMode && h('div', {
-                        ref: sentinelRef,
-                        className: `note-loading-indicator${loadingMore ? ' is-loading' : ''}`,
-                        key: 'load-more-sentinel',
-                        style: {
-                            display: (hasMore && !searchTerm) ? 'flex' : 'none',
-                            cursor: 'default',
-                            minHeight: '20px',
-                            padding: '8px 10px'
-                        },
-                    }, loadingMore ? '\u25B2 Loading older notes...' : '\u25B2 Scroll to load more'),
+!isEditingMode && h('div', {
+    ref: sentinelRef,
+    className: `note-loading-indicator${loadingMore ? ' is-loading' : ''} note-load-more-clickable`,
+    key: 'load-more-sentinel',
+    style: {
+        display: (hasMore && !searchTerm) ? 'flex' : 'none',
+        cursor: loadingMore ? 'default' : 'pointer',
+        minHeight: '20px',
+        padding: '8px 10px'
+    },
+    onClick: loadingMore ? undefined : () => {
+        // 手动触发加载更多（作为 IntersectionObserver 失效时的兜底）
+        if (!isLoadingMoreRef.current && hasMoreRef.current && !searchTerm) {
+            doLoadMore();
+        }
+    },
+    title: loadingMore ? '' : 'Click to load older notes',
+}, loadingMore ? '\u25B2 Loading older notes...' : '\u25B2 Scroll or click to load more'),
                     !isEditingMode && starFilterActive && h('div', { className: 'note-star-filter-banner' }, '\u2605 Showing starred notes only'),
                     filteredNotes.length > 0 ?
                         filteredNotes.map((note, i) => {
@@ -4072,7 +4274,8 @@ const handleTouchEnd = useCallback((e) => {
                                 return null;
                             }
                             return h(NoteItem, {
-                                key: note.ts || i,
+                                // 方案 3：key 拼上 _rev，内容变化时强制重挂载
+                                key: `${note.ts}:${note._rev || 0}`,
                                 note,
                                 onDelete: handleDelete,
                                 onEdit: handleEdit,
@@ -4091,12 +4294,12 @@ const handleTouchEnd = useCallback((e) => {
                                 isVisible: visibleItems.has(note.ts) || note._pending === true,
                                 onEditingChange: handleEditingChange,
                                 isEditingThis: isEditingMode && note.ts === editingNoteTs,
-                                onPaste: handlePaste
+                                onPaste: handlePaste,
+                                onRenameTs: handleRenameTs
                             });
                         }) :
                         h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))
                 ),
-            // ========== 输入表单 - 编辑模式下隐藏 ==========
             !isEditingMode && h('div', { className: `note-input-form ${isFullscreen ? 'note-input-fullscreen' : ''}` },
                 h('textarea', {
                     ref: inputRef,
@@ -4126,7 +4329,6 @@ const handleTouchEnd = useCallback((e) => {
                     title: isGuest ? 'Send' : 'Send (long press to upload files)'
                 }, sending ? '...' : 'Send')
             ),
-            // ========== 编辑模式提示 ==========
             isEditingMode && h('div', {
                 className: 'note-editing-mode-banner'
             }, '\u270F\uFE0F Editing note... Press ESC to cancel, Shift+Enter to save')
