@@ -1,4 +1,4 @@
-exports.version = 4.7
+exports.version = 4.9
 exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
@@ -276,7 +276,7 @@ exports.init = async api => {
     const PAGE_SIZE = 10
     const SUMMARY_LENGTH = 250
 
-    const DOWNLOAD_TIMEOUT = 15000
+    const DOWNLOAD_TIMEOUT = 3000
     const MAX_CONCURRENT_DOWNLOADS = 3
     const MAX_LOCALIZE_TOTAL = 50
 
@@ -1192,6 +1192,7 @@ exports.init = async api => {
                 const filePath = path.join(TEMP_DIR, file)
                 try {
                     const stat = await fs.stat(filePath)
+                    if (stat.isDirectory()) continue
                     if (stat.mtimeMs < cutoff) {
                         await fs.unlink(filePath)
                     }
@@ -1209,6 +1210,22 @@ exports.init = async api => {
                     }
                 } catch {}
             }
+
+            // 清理超過 1 小時的 chunk 會話
+            try {
+                const chunksRoot = path.join(TEMP_DIR, 'chunks')
+                const sessionDirs = await fs.readdir(chunksRoot).catch(() => [])
+                const staleCutoff = Date.now() - 60 * 60 * 1000
+                for (const dirName of sessionDirs) {
+                    const dirPath = path.join(chunksRoot, dirName)
+                    try {
+                        const st = await fs.stat(dirPath)
+                        if (st.mtimeMs < staleCutoff) {
+                            await fs.rm(dirPath, { recursive: true, force: true })
+                        }
+                    } catch {}
+                }
+            } catch {}
         } catch {}
     }
 
@@ -2024,11 +2041,6 @@ exports.init = async api => {
         ctx.status = 200
     }
 
-    // ============================================
-    // 新增：重命名笔记时间戳
-    // 去重策略：若目标时间戳已存在，则每次 +1 秒
-    // 文件安全：先复制为新文件，再改索引，最后删旧文件
-    // ============================================
     async function renameNoteTs(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
@@ -2045,7 +2057,6 @@ exports.init = async api => {
         const content = await loadNoteContent(tab, oldTs)
         if (content === null) { ctx.status = 404; return }
 
-        // 去重：已存在则每次 +1 秒，直到找到空位
         let finalTs = newTs
         let d = new Date(finalTs)
         if (isNaN(d.getTime())) { ctx.status = 400; ctx.body = { error: 'Invalid timestamp' }; return }
@@ -2062,7 +2073,6 @@ exports.init = async api => {
             return
         }
 
-        // 文件安全：复制旧文件为新文件（沿用原有命名规则 getNoteFilePath）
         const oldPath = getNoteFilePath(tab, oldTs)
         const newPath = getNoteFilePath(tab, finalTs)
 
@@ -2074,12 +2084,10 @@ exports.init = async api => {
             return
         }
 
-        // 更新索引
         delete index.notes[oldTs]
         index.notes[finalTs] = meta
         await saveTabIndex(tab, index)
 
-        // 删除旧文件
         await deleteNoteFile(tab, oldTs)
 
         api.notifyClient('notes', 'renameNoteTs', { tab, oldTs, newTs: finalTs })
@@ -2336,8 +2344,15 @@ exports.init = async api => {
         let tempStats = { count: 0, totalSize: 0 }
         try {
             const tempFiles = await fs.readdir(TEMP_DIR).catch(() => [])
-            tempStats.count = tempFiles.length
+            const realTempFiles = []
             for (const f of tempFiles) {
+                try {
+                    const s = await fs.stat(path.join(TEMP_DIR, f))
+                    if (!s.isDirectory()) realTempFiles.push(f)
+                } catch {}
+            }
+            tempStats.count = realTempFiles.length
+            for (const f of realTempFiles) {
                 try {
                     const fstat = await fs.stat(path.join(TEMP_DIR, f))
                     tempStats.totalSize += fstat.size
@@ -2631,6 +2646,186 @@ exports.init = async api => {
         }
     }
 
+    // ============================================
+    // 分塊上傳：接收單一 chunk（JSON + base64）
+    // ============================================
+    async function uploadChunk(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+
+        try {
+            let body = ctx.state.params || ctx.request?.body || {}
+            if (typeof ctx.getBody === 'function') {
+                try {
+                    const b = await ctx.getBody()
+                    if (b && typeof b === 'object') body = b
+                } catch {}
+            }
+
+            const { uploadId, index, totalChunks, data, mimeType } = body
+            if (!uploadId || typeof index !== 'number' || !totalChunks || !data) {
+                ctx.status = 400
+                ctx.body = { error: 'Missing chunk fields' }
+                return
+            }
+
+            const buf = Buffer.from(data, 'base64')
+            if (buf.length === 0) {
+                ctx.status = 400
+                ctx.body = { error: 'Empty chunk' }
+                return
+            }
+
+            const chunksDir = path.join(TEMP_DIR, 'chunks', uploadId)
+            await ensureDir(chunksDir)
+
+            const maxChunkBytes = 8 * 1024 * 1024
+            if (buf.length > maxChunkBytes) {
+                ctx.status = 413
+                ctx.body = { error: 'Chunk too large' }
+                return
+            }
+
+            const chunkPath = path.join(chunksDir, `${String(index).padStart(6, '0')}.part`)
+            await fs.writeFile(chunkPath, buf)
+
+            const metaPath = path.join(chunksDir, '_meta.json')
+            let meta = {}
+            try {
+                meta = JSON.parse(await fs.readFile(metaPath, 'utf-8'))
+            } catch {}
+            meta = {
+                uploadId,
+                totalChunks,
+                mimeType: mimeType || meta.mimeType || 'application/octet-stream',
+                createdAt: meta.createdAt || Date.now()
+            }
+            await fs.writeFile(metaPath, JSON.stringify(meta))
+
+            ctx.body = { ok: true, index, received: buf.length }
+            ctx.status = 200
+        } catch (e) {
+            ctx.status = 500
+            ctx.body = { error: 'Chunk upload failed: ' + (e && e.message ? e.message : String(e)) }
+        }
+    }
+
+    // ============================================
+    // 分塊上傳：合併所有 chunk，產生最終檔案
+    // ============================================
+    async function uploadFinalize(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!username || !isAllowed(username)) { ctx.status = 403; return }
+
+        let body = ctx.state.params || ctx.request?.body || {}
+        if (typeof ctx.getBody === 'function') {
+            try {
+                const b = await ctx.getBody()
+                if (b && typeof b === 'object') body = b
+            } catch {}
+        }
+
+        const { uploadId, totalChunks, name, displayName, originalName, mimeType } = body
+        if (!uploadId || !totalChunks) {
+            ctx.status = 400
+            ctx.body = { error: 'Missing uploadId or totalChunks' }
+            return
+        }
+
+        const chunksDir = path.join(TEMP_DIR, 'chunks', uploadId)
+        try {
+            await fs.stat(chunksDir)
+        } catch {
+            ctx.status = 404
+            ctx.body = { error: 'Upload session not found' }
+            return
+        }
+
+        try {
+            const files = await fs.readdir(chunksDir)
+            const partFiles = files.filter(f => f.endsWith('.part')).sort()
+
+            if (partFiles.length !== totalChunks) {
+                ctx.status = 400
+                ctx.body = { error: `Incomplete upload: got ${partFiles.length}/${totalChunks} chunks` }
+                return
+            }
+
+            const buffers = []
+            for (const pf of partFiles) {
+                const buf = await fs.readFile(path.join(chunksDir, pf))
+                buffers.push(buf)
+            }
+            const finalBuffer = Buffer.concat(buffers)
+
+            if (finalBuffer.length === 0) {
+                ctx.status = 400
+                ctx.body = { error: 'Empty file after merge' }
+                return
+            }
+
+            const mime = mimeType || 'application/octet-stream'
+            const isImage = mime.startsWith('image/')
+            const isVideo = mime.startsWith('video/')
+            const isAudio = mime.startsWith('audio/')
+
+            const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
+            if (finalBuffer.length > maxSize) {
+                ctx.status = 413
+                ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }
+                fs.rm(chunksDir, { recursive: true, force: true }).catch(() => {})
+                return
+            }
+
+            const origName = originalName || name || 'file'
+            const display = displayName || origName
+
+            await ensureDir(TEMP_DIR)
+            const fileId = generateFileId(origName)
+            const filePath = path.join(TEMP_DIR, fileId)
+            await fs.writeFile(filePath, finalBuffer)
+
+            const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
+            let tempNameMap = {}
+            try {
+                tempNameMap = JSON.parse(await fs.readFile(tempMapPath, 'utf-8'))
+            } catch {}
+            tempNameMap[fileId] = display
+            await fs.writeFile(tempMapPath, JSON.stringify(tempNameMap))
+
+            let hasThumb = false
+            if (isImage) {
+                const thumbDir = await ensureDir(THUMB_BASE_DIR)
+                const thumbSubDir = path.join(thumbDir, '_temp')
+                await ensureDir(thumbSubDir)
+                const thumbPath = path.join(thumbSubDir, fileId)
+                hasThumb = await generateThumbnail(finalBuffer, thumbPath)
+            }
+
+            fs.rm(chunksDir, { recursive: true, force: true }).catch(() => {})
+
+            ctx.body = {
+                ok: true,
+                fileId,
+                isImage,
+                isVideo,
+                isAudio,
+                isOther: !isImage && !isVideo && !isAudio,
+                url: `/~/notes/temp/${fileId}`,
+                name: display,
+                hasThumb,
+                originalName: origName
+            }
+            ctx.status = 200
+        } catch (e) {
+            ctx.status = 500
+            ctx.body = { error: 'Finalize failed: ' + (e && e.message ? e.message : String(e)) }
+        }
+    }
+
+    // ============================================
+    // 舊版上傳：單次 JSON + base64（保留兼容，小檔案可用）
+    // ============================================
     async function uploadFileToTemp(ctx) {
         const username = getCurrentUsername(ctx)
         if (!username || !isAllowed(username)) { ctx.status = 403; return }
@@ -2652,7 +2847,7 @@ exports.init = async api => {
             const isImage = mimeType.startsWith('image/')
             const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
             if (fileBuffer.length > maxSize) {
-                ctx.status = 400; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
+                ctx.status = 413; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
             }
 
             await ensureDir(TEMP_DIR)
@@ -3017,6 +3212,8 @@ exports.init = async api => {
             if (p === `${API_BASE}update-category-name` && method === 'POST') { await updateCategoryName(ctx); return }
             if (p === `${API_BASE}update-category-order` && method === 'POST') { await updateCategoryOrder(ctx); return }
             if (p === `${API_BASE}upload` && method === 'POST') { await uploadFileToTemp(ctx); return }
+            if (p === `${API_BASE}upload-chunk` && method === 'POST') { await uploadChunk(ctx); return }
+            if (p === `${API_BASE}upload-finalize` && method === 'POST') { await uploadFinalize(ctx); return }
 
             if (p === `${ADMIN_API}overview` && method === 'GET') { await adminOverview(ctx); return }
             if (p === `${ADMIN_API}export` && method === 'GET') { await adminExport(ctx); return }
