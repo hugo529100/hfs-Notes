@@ -8,6 +8,67 @@
     const CACHE_ACTIVE_CATEGORY = 'notes_activeCategory';
     const CACHE_CATEGORY_ORDER = 'notes_categoryOrder';
 
+    // ===== [新增] 側邊欄寬度快取（vw 百分比，參考 tree-nav）=====
+    const CACHE_PANEL_RATIO = 'notes_panelRatio';
+    const DEFAULT_PANEL_RATIO = 25;
+    const PANEL_RATIO_MIN = 12;
+    const PANEL_RATIO_MAX = 55;
+    const PANEL_MIN_PX = 300;   // 面板最小實際寬度
+
+    // 把 300px 下限換算成目前視窗的 vw，確保面板永遠不窄於 300px
+    function getPanelRatioMin(vw = window.innerWidth) {
+        if (!vw || vw <= 0) return PANEL_RATIO_MIN;
+        return Math.min(PANEL_RATIO_MAX, Math.max(PANEL_RATIO_MIN, (PANEL_MIN_PX / vw) * 100));
+    }
+    function clampPanelRatio(val, vw = window.innerWidth) {
+        if (!isFinite(val)) val = DEFAULT_PANEL_RATIO;
+        return Math.max(getPanelRatioMin(vw), Math.min(PANEL_RATIO_MAX, val));
+    }
+
+    function loadPanelRatio() {
+        try {
+            const v = parseFloat(localStorage.getItem(CACHE_PANEL_RATIO));
+            if (isFinite(v)) return clampPanelRatio(v);
+        } catch {}
+        return clampPanelRatio(DEFAULT_PANEL_RATIO);
+    }
+    function savePanelRatio(val) {
+        val = clampPanelRatio(val);
+        if (!isFinite(val)) return;
+        try { localStorage.setItem(CACHE_PANEL_RATIO, String(val)); } catch {}
+    }
+
+    // ===== [新增] 面板展開狀態持久化 =====
+    const CACHE_PANEL_OPEN = 'notes_panelOpen';
+
+    function loadPanelOpen() {
+        try {
+            const v = localStorage.getItem(CACHE_PANEL_OPEN);
+            if (v === '0') return false;
+            if (v === '1') return true;
+        } catch {}
+        return true; // 預設展開
+    }
+    function savePanelOpen(open) {
+        try { localStorage.setItem(CACHE_PANEL_OPEN, open ? '1' : '0'); } catch {}
+    }
+
+    // ===== [新增] 面板是否開啟（show）持久化 =====
+    const CACHE_PANEL_SHOW = 'notes_panelShow';
+
+    function loadPanelShow() {
+        try {
+            const v = localStorage.getItem(CACHE_PANEL_SHOW);
+            if (v === '0') return false;
+            if (v === '1') return true;
+        } catch {}
+        return false; // 預設關閉（首次進入不自動彈出）
+    }
+    function savePanelShow(show) {
+        try { localStorage.setItem(CACHE_PANEL_SHOW, show ? '1' : '0'); } catch {}
+    }
+    // ===== [/新增] =====
+
     let isGuest = false;
     let publicTabsList = [];
 
@@ -19,10 +80,6 @@
             publicTabsList = data.publicTabs || [];
             return data.allowed;
         } catch { return false; }
-    }
-
-    function sanitizeFileNameForUpload(originalName) {
-        return { safeName: originalName, displayName: originalName };
     }
 
 // ============================================
@@ -84,38 +141,88 @@ function toLocalDatetimeValue(isoTs) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// ============================================
+// 上傳：分塊上傳（JSON + base64，每塊 1MB）
+// 避免單次 body 過大被 HFS 核心層中斷
+// ============================================
+const UPLOAD_CHUNK_SIZE = 1024 * 1024; // 1MB per chunk
+
 async function uploadFile(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = async () => {
+    const rawName = file.name;
+    const safeName = safeFileName(rawName);
+    const displayName = safeDisplayName(rawName);
+
+    const uploadId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const totalChunks = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
+
+    for (let i = 0; i < totalChunks; i++) {
+        const start = i * UPLOAD_CHUNK_SIZE;
+        const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size);
+        const chunkBlob = file.slice(start, end);
+
+        const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const result = reader.result;
+                const idx = result.indexOf(',');
+                resolve(idx >= 0 ? result.slice(idx + 1) : result);
+            };
+            reader.onerror = () => reject(new Error('Failed to read file chunk'));
+            reader.readAsDataURL(chunkBlob);
+        });
+
+        const res = await fetch('/~/api/notes/upload-chunk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                uploadId,
+                index: i,
+                totalChunks,
+                name: safeName,
+                displayName,
+                originalName: rawName,
+                mimeType: file.type || 'application/octet-stream',
+                data: base64
+            })
+        });
+
+        if (!res.ok) {
+            let msg = `Upload failed at chunk ${i + 1}/${totalChunks} (status: ${res.status})`;
             try {
-                const rawName = file.name;
-
-                const safeName = safeFileName(rawName);
-                const displayName = safeDisplayName(rawName);
-
-                const res = await fetch('/~/api/notes/upload', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        name: safeName,
-                        data: reader.result,
-                        displayName: displayName
-                    })
-                });
-                if (!res.ok) {
-                    const err = await res.json().catch(() => ({}));
-                    throw new Error(err.error || 'Upload failed (status: ' + res.status + ')');
-                }
-                const data = await res.json();
-                resolve({ ...data, displayName });
-            } catch (e) {
-                reject(e);
+                const err = await res.json();
+                if (err && err.error) msg = err.error;
+            } catch {}
+            if (res.status === 413) {
+                msg = 'File too large for server (413). Try a smaller file or reduce chunk size.';
             }
-        };
-        reader.onerror = () => reject(new Error('Failed to read file'));
-        reader.readAsDataURL(file);
+            throw new Error(msg);
+        }
+    }
+
+    const finalRes = await fetch('/~/api/notes/upload-finalize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            uploadId,
+            totalChunks,
+            name: safeName,
+            displayName,
+            originalName: rawName,
+            mimeType: file.type || 'application/octet-stream'
+        })
     });
+
+    if (!finalRes.ok) {
+        let msg = 'Upload finalize failed (status: ' + finalRes.status + ')';
+        try {
+            const err = await finalRes.json();
+            if (err && err.error) msg = err.error;
+        } catch {}
+        throw new Error(msg);
+    }
+
+    const data = await finalRes.json();
+    return { ...data, displayName };
 }
 
     function createFilePicker(accept = '*') {
@@ -238,12 +345,10 @@ async function uploadFile(file) {
         const [loadingFull, setLoadingFull] = useState(false);
         const [isContentFullyLoaded, setIsContentFullyLoaded] = useState(initialFullContent !== null);
 
-        // ===== 编辑时间戳相关 =====
         const [editingTs, setEditingTs] = useState(false);
         const [savingTs, setSavingTs] = useState(false);
         const tsInputRef = useRef(null);
 
-        // ===== iPad 双击支持 refs =====
         const lastTapRef = useRef(0);
         const tapTimerRef = useRef(null);
 
@@ -339,7 +444,6 @@ async function uploadFile(file) {
             };
         }, [editing, ts, effectiveTab, editVal]);
 
-        // ===== 时间戳编辑输入框自动聚焦 =====
         useEffect(() => {
             if (editingTs && tsInputRef.current) {
                 tsInputRef.current.focus();
@@ -506,7 +610,6 @@ async function uploadFile(file) {
             }
         }, [isFullscreenColumn, isOwner, currentGuest, loadFullContentForEdit, isPending]);
 
-        // ===== 保存时间戳：返回最终 ts（成功）或原 ts（失败/无变化）=====
         const saveTs = useCallback(async () => {
             if (savingTs) return ts;
             const val = tsInputRef.current?.value;
@@ -610,7 +713,7 @@ async function uploadFile(file) {
                             allMarks += `[att:${result.fileId}:${displayName}]`;
                         }
                     } catch (e) {
-                        HFS.toast(`Failed to upload "${file.name}"`, 'error');
+                        HFS.toast(`Failed to upload "${file.name}": ${e.message || 'error'}`, 'error');
                     }
                 }
                 if (allMarks) {
@@ -1542,6 +1645,7 @@ async function uploadFile(file) {
         );
     }
 
+
     // ========== NotePanel 组件 ==========
     function NotePanel({ onClose }) {
         const CACHE_TTL = 5 * 60 * 1000;
@@ -1624,7 +1728,6 @@ async function uploadFile(file) {
         const esRef = useRef(null);
         const loadNotesAbortControllerRef = useRef(null);
 
-        // ===== 保存后往返切 tab 时，记录要定位的 ts =====
         const scrollToNoteAfterTabSwitchRef = useRef(null);
 
         const tabCacheRef = useRef({});
@@ -1644,7 +1747,12 @@ async function uploadFile(file) {
         const currentOffsetRef = useRef(0);
         const fullContentFallbackRef = useRef({});
         const [sending, setSending] = useState(false);
-
+        // ===== [新增] 側邊欄寬度 state / ref（vw）+ 展開狀態 =====
+        const [panelRatio, setPanelRatio] = useState(loadPanelRatio);
+        const panelRatioRef = useRef(panelRatio);
+        const panelResizeDragRef = useRef(null);
+        const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
+        // ===== [/新增] =====
         const pendingNoteTsRef = useRef(null);
         const pendingUsernameRef = useRef('Guest');
 
@@ -1689,19 +1797,58 @@ async function uploadFile(file) {
         }, [categoryNames]);
 
         useEffect(() => {
-            const handleResize = () => setIsMobile(window.innerWidth <= 768);
+            const handleResize = () => {
+                setIsMobile(window.innerWidth <= 768);
+                // 視窗變窄時，12vw 可能已不足 300px，重新換算下限
+                const clamped = clampPanelRatio(panelRatioRef.current);
+                if (Math.abs(clamped - panelRatioRef.current) > 0.01) {
+                    panelRatioRef.current = clamped;
+                    setPanelRatio(clamped);
+                    savePanelRatio(clamped);
+                }
+            };
             handleResize();
             window.addEventListener('resize', handleResize);
             return () => window.removeEventListener('resize', handleResize);
         }, []);
 
         useEffect(() => { mRef.current = m; }, [m]);
+
+        // 輸入框隨內容自動加高（Safari 也需要，換行後才會量到正確 scrollHeight）
+        useEffect(() => {
+            const ta = inputRef.current;
+            if (!ta) return;
+            ta.style.height = 'auto';
+            const raf = requestAnimationFrame(() => {
+                if (!ta.isConnected) return;
+                ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+            });
+            return () => cancelAnimationFrame(raf);
+        }, [m]);
         useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
         useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
         useEffect(() => { isLoadingMoreRef.current = loadingMore; }, [loadingMore]);
         useEffect(() => { currentOffsetRef.current = currentOffset; }, [currentOffset]);
         useEffect(() => { isFullscreenRef.current = isFullscreen; }, [isFullscreen]);
         useEffect(() => { globalActiveTab = activeTab; }, [activeTab]);
+
+        // ===== [新增] 套用 panel 寬度（vw）+ body class 同步 =====
+        useEffect(() => { panelRatioRef.current = panelRatio; }, [panelRatio]);
+
+        useEffect(() => {
+            const safeRatio = clampPanelRatio(panelRatio);
+            document.body.style.setProperty('--note-panel-width', safeRatio + 'vw');
+        }, [panelRatio]);
+
+        useEffect(() => {
+            document.body.classList.add('note-panel-layout');
+            document.body.classList.toggle('note-panel-open', panelOpen);
+            savePanelOpen(panelOpen);   // [新增] 持久化展開狀態
+            return () => {
+                document.body.classList.remove('note-panel-layout', 'note-panel-open');
+            };
+        }, [panelOpen]);
+        // ===== [/新增] =====
 
         useEffect(() => {
             if (filteredTabs.length > 0 && !filteredTabs.includes(activeTab)) {
@@ -1927,7 +2074,6 @@ async function uploadFile(file) {
                         return;
                     }
 
-                    // ===== 时间戳重命名 =====
                     if (e === 'renameNoteTs') {
                         if (data.tab !== activeTabRef.current) return;
                         const finalTs = data.newTs || data.oldTs;
@@ -1977,7 +2123,6 @@ async function uploadFile(file) {
                             }, 100);
                         }
                     } else if (e === 'updateNote') {
-                        // 同步更新 note 内容，并递增 _rev 强制重挂载
                         setNotes(prev => prev.map(n => n.ts === data.ts ? {
                             ...n,
                             m: data.m,
@@ -2033,20 +2178,22 @@ async function uploadFile(file) {
             const originalTouchAction = document.body.style.touchAction;
             const originalOverscrollBehavior = document.body.style.overscrollBehavior;
 
-            if (!isFullscreen) {
+            // 只有手機全屏 Notes 才鎖住背景；桌面/平板的分割面板不能鎖，
+            // 否則左側主頁面無法滾動、也無法拖動內容。
+            if (!isFullscreen && isMobile) {
                 document.body.style.overflow = 'hidden';
                 document.body.style.touchAction = 'none';
                 document.body.style.overscrollBehavior = 'contain';
             }
 
             return () => {
-                if (!isFullscreen) {
+                if (!isFullscreen && isMobile) {
                     document.body.style.overflow = originalOverflow;
                     document.body.style.touchAction = originalTouchAction;
                     document.body.style.overscrollBehavior = originalOverscrollBehavior;
                 }
             };
-        }, [isFullscreen]);
+        }, [isFullscreen, isMobile]);
 
         useEffect(() => {
             const btn = sendBtnRef.current;
@@ -2074,7 +2221,7 @@ async function uploadFile(file) {
                                     allMarks += `[att:${result.fileId}:${displayName}]`;
                                 }
                             } catch (e) {
-                                HFS.toast(`Failed to upload "${file.name}"`, 'error');
+                                HFS.toast(`Failed to upload "${file.name}": ${e.message || 'error'}`, 'error');
                             }
                         }
 
@@ -2353,7 +2500,7 @@ async function uploadFile(file) {
                                 allMarks += `[att:${result.fileId}:${displayName}]`;
                             }
                         } catch (e) {
-                            HFS.toast(`Failed to upload "${file.name}"`, 'error');
+                            HFS.toast(`Failed to upload "${file.name}": ${e.message || 'error'}`, 'error');
                         }
                     }
 
@@ -2472,14 +2619,110 @@ async function uploadFile(file) {
             };
         }, [isMobile, showSearch]);
 
+        // 面板高度貼合 visualViewport：修正 iPad Safari 的 100vh、
+        // 工具列收合與螢幕鍵盤造成的輸入框浮空／被遮擋。
+        useEffect(() => {
+            const vv = window.visualViewport;
+            const panel = panelRef.current;
+            if (!vv || !panel) return;
+            let raf = 0;
+            const apply = () => {
+                const visibleTop = vv.offsetTop || 0;
+                const visibleBottom = visibleTop + vv.height;
+                const panelTop = panel.getBoundingClientRect().top;
+                const h = Math.max(0, Math.round(visibleBottom - panelTop));
+                if (h > 0) panel.style.height = h + 'px';
+            };
+            const schedule = () => {
+                cancelAnimationFrame(raf);
+                raf = requestAnimationFrame(apply);
+            };
+
+            vv.addEventListener('resize', schedule);
+            vv.addEventListener('scroll', schedule);
+
+            let ro = null;
+            const treeNav = document.querySelector('.hfs-tree-nav');
+            if (window.ResizeObserver && treeNav) {
+                ro = new ResizeObserver(schedule);
+                ro.observe(treeNav);
+            }
+
+            let mo = null;
+            if (window.MutationObserver) {
+                mo = new MutationObserver(schedule);
+                mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+            }
+
+            schedule();
+            return () => {
+                cancelAnimationFrame(raf);
+                vv.removeEventListener('resize', schedule);
+                vv.removeEventListener('scroll', schedule);
+                if (ro) ro.disconnect();
+                if (mo) mo.disconnect();
+                panel.style.height = '';
+            };
+        }, []);
+
         const getTabDisplayName = useCallback((tabKey) => {
             return tabNames[tabKey] || tabKey;
         }, [tabNames]);
 
+        // ===== [新增] 側邊欄拖拽調寬 handlers（vw、貼右側往左拖變寬）=====
+        const handlePanelResizeStart = useCallback((e) => {
+            if (isFullscreenRef.current) return;
+            if (window.innerWidth <= 768) return;
+            if (window.matchMedia('(orientation: portrait)').matches) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const vw = window.innerWidth;
+            panelResizeDragRef.current = {
+                startX: e.clientX,
+                startRatio: panelRatioRef.current,
+                vw,
+                lastRatio: panelRatioRef.current,
+                moved: false
+            };
+            try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+            document.body.classList.add('note-panel-resizing');
+        }, []);
+
+        const handlePanelResizeMove = useCallback((e) => {
+            const d = panelResizeDragRef.current;
+            if (!d) return;
+            const dx = e.clientX - d.startX;
+            if (!d.moved) {
+                if (Math.abs(dx) < 3) return;
+                d.moved = true;
+            }
+            e.preventDefault();
+            let next = d.startRatio + (-dx / d.vw) * 100;
+            // 最小寬度 300px（換算成目前視窗的 vw）
+            next = Math.max(getPanelRatioMin(d.vw), Math.min(PANEL_RATIO_MAX, next));
+            d.lastRatio = next;
+            document.body.style.setProperty('--note-panel-width', next + 'vw');
+        }, []);
+
+        const handlePanelResizeEnd = useCallback((e) => {
+            const d = panelResizeDragRef.current;
+            if (!d) return;
+            panelResizeDragRef.current = null;
+            try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+            document.body.classList.remove('note-panel-resizing');
+            if (!d.moved) return;
+            const finalRatio = clampPanelRatio(d.lastRatio);
+            setPanelRatio(finalRatio);
+            savePanelRatio(finalRatio);
+        }, []);
+        // ===== [/新增] =====
         const handleClose = () => {
             document.body.style.overflow = '';
             document.body.style.touchAction = '';
             document.body.style.overscrollBehavior = '';
+
+            // [新增] 立即移除讓位 class，避免面板卸載後主界面仍被推開
+            document.body.classList.remove('note-panel-layout', 'note-panel-open', 'note-panel-resizing');
 
             if (observerRef.current) {
                 observerRef.current.disconnect();
@@ -2504,39 +2747,7 @@ async function uploadFile(file) {
             setTimeout(onClose, 300);
         };
 
-        const isDesktopDevice = useCallback(() => {
-            return window.innerWidth > 768 && !('ontouchstart' in window);
-        }, []);
-
-        useEffect(() => {
-            if (!isDesktopDevice()) return;
-
-            const handleClickOutside = (e) => {
-                const panel = panelRef.current;
-                if (!panel || closing) return;
-
-                const rect = panel.getBoundingClientRect();
-                const margin = 100;
-
-                const isOutside = (
-                    e.clientX < rect.left - margin ||
-                    e.clientX > rect.right + margin ||
-                    e.clientY < rect.top - margin ||
-                    e.clientY > rect.bottom + margin
-                );
-
-                if (isOutside) {
-                    handleClose();
-                }
-            };
-
-            document.addEventListener('click', handleClickOutside);
-
-            return () => {
-                document.removeEventListener('click', handleClickOutside);
-            };
-        }, [closing, isDesktopDevice]);
-
+        // [已移除] 點擊面板外部自動關閉：改為僅能透過標題列 × 按鈕關閉
         const toggleFullscreen = useCallback(() => {
             if (isMobile) {
                 HFS.toast('Fullscreen mode not available on mobile', 'info');
@@ -2672,7 +2883,6 @@ async function uploadFile(file) {
             doSend();
         }, [sanitizeText, editingNoteTs, sending]);
 
-        // ===== 以「条目时间文字」为锚点定位 =====
         const scrollToNoteByTs = useCallback((targetTs, attempts = 20) => {
             if (!targetTs) return;
             const container = listRef.current;
@@ -2729,7 +2939,6 @@ async function uploadFile(file) {
             setTimeout(recheck, 400);
         }, []);
 
-        // ===== 编辑保存：本地更新 notes + _rev 强制重挂载 + 定位 =====
         const handleEdit = useCallback((ts, newText) => {
             const doEdit = async () => {
                 try {
@@ -2755,8 +2964,6 @@ async function uploadFile(file) {
                         return;
                     }
 
-                    // ===== 方案 1：本地立即更新 notes，并递增 _rev 强制重挂载 =====
-                    // _rev 变化 → React key 变化 → NoteItem 卸载重挂 → 重新 loadFullContent → 拿到最新内容
                     setNotes(prev => prev.map(n => n.ts === ts ? {
                         ...n,
                         m: sanitizedText,
@@ -2765,7 +2972,6 @@ async function uploadFile(file) {
                         _rev: Date.now()
                     } : n));
 
-                    // ===== 方案 3：直接滚动定位到该 note，不再往返切 tab =====
                     setTimeout(() => {
                         scrollToNoteByTs(ts);
                     }, 120);
@@ -2777,7 +2983,6 @@ async function uploadFile(file) {
             doEdit();
         }, [sanitizeText, scrollToNoteByTs]);
 
-        // ===== 重命名时间戳：成功后主动同步 editingNoteTs =====
         const handleRenameTs = useCallback(async (oldTs, newTs) => {
             const currentTab = activeTabRef.current;
             if (!currentTab) return null;
@@ -2794,10 +2999,8 @@ async function uploadFile(file) {
                 const data = await res.json().catch(() => ({}));
                 const finalTs = data.newTs || newTs;
 
-                // 主动把 editingNoteTs 从旧 ts 同步到新 ts
                 setEditingNoteTs(prev => (prev === oldTs ? finalTs : prev));
 
-                // 本地同步 notes 的 ts，并递增 _rev
                 setNotes(prev => prev.map(n => n.ts === oldTs ? { ...n, ts: finalTs, _rev: Date.now() } : n));
 
                 HFS.toast('Timestamp updated', 'success');
@@ -3857,7 +4060,6 @@ async function uploadFile(file) {
         const dragOverlayContent = isGuest ? 'Please login to upload files' : 'Drop files to upload (multi-file supported)';
 
         const isEditingMode = !isFullscreen && editingNoteTs !== null;
-
         return h('div', {
             className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
             style: { fontSize: fontSize + 'px', overscrollBehavior: 'contain' },
@@ -4260,7 +4462,6 @@ async function uploadFile(file) {
         padding: '8px 10px'
     },
     onClick: loadingMore ? undefined : () => {
-        // 手动触发加载更多（作为 IntersectionObserver 失效时的兜底）
         if (!isLoadingMoreRef.current && hasMoreRef.current && !searchTerm) {
             doLoadMore();
         }
@@ -4274,7 +4475,6 @@ async function uploadFile(file) {
                                 return null;
                             }
                             return h(NoteItem, {
-                                // 方案 3：key 拼上 _rev，内容变化时强制重挂载
                                 key: `${note.ts}:${note._rev || 0}`,
                                 note,
                                 onDelete: handleDelete,
@@ -4314,7 +4514,7 @@ async function uploadFile(file) {
                     },
                     onInput(e) {
                         e.target.style.height = 'auto';
-                        e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                        e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
                     },
                     placeholder: isGuest ? 'Shift+Enter to send (Login to upload files)' : 'Shift+Enter send | Long press Send to upload | Drag & drop files',
                     className: 'note-input',
@@ -4331,12 +4531,26 @@ async function uploadFile(file) {
             ),
             isEditingMode && h('div', {
                 className: 'note-editing-mode-banner'
-            }, '\u270F\uFE0F Editing note... Press ESC to cancel, Shift+Enter to save')
+            }, '\u270F\uFE0F Editing note... Press ESC to cancel, Shift+Enter to save'),
+
+            // ===== [新增] 側邊欄左緣拖拽調寬手柄（僅橫屏非全屏桌面）=====
+            (!isMobile && !isFullscreen) && h('div', {
+                className: 'note-panel-resizer',
+                role: 'separator',
+                'aria-orientation': 'vertical',
+                onPointerDown: handlePanelResizeStart,
+                onPointerMove: handlePanelResizeMove,
+                onPointerUp: handlePanelResizeEnd,
+                onPointerCancel: handlePanelResizeEnd
+            },
+                h('span', { className: 'note-panel-resizer-grip', 'aria-hidden': 'true' })
+            )
+            // ===== [/新增] =====
         );
     }
 
     function NoteApp() {
-        const [show, setShow] = useState(false);
+        const [show, setShow] = useState(loadPanelShow);
         const [hasAccess, setHasAccess] = useState(false);
         const mountRef = useRef(null);
 
@@ -4345,9 +4559,30 @@ async function uploadFile(file) {
                 setHasAccess(allowed || publicTabsList.length > 0);
             });
             const fn = () => setShow(prev => !prev);
+            const closeFn = () => setShow(false);
             window.addEventListener('toggle-notes', fn);
-            return () => window.removeEventListener('toggle-notes', fn);
+            window.addEventListener('close-notes', closeFn);
+            return () => {
+                window.removeEventListener('toggle-notes', fn);
+                window.removeEventListener('close-notes', closeFn);
+            };
         }, []);
+
+        // Notes 與 QuickPages 共用右側區域：Notes 開啟時收起 QuickPages
+        useEffect(() => {
+            if (show && document.body.classList.contains('qp-panel-open')) {
+                window.dispatchEvent(new CustomEvent('close-quickpages'));
+            }
+        }, [show]);
+
+        // ===== [新增] show 變化時持久化 + 同步讓位 class =====
+        useEffect(() => {
+            savePanelShow(show);
+            if (!show) {
+                document.body.classList.remove('note-panel-layout', 'note-panel-open', 'note-panel-resizing');
+            }
+        }, [show]);
+        // ===== [/新增] =====
 
         useEffect(() => {
             if (mountRef.current) {
@@ -4411,7 +4646,6 @@ async function uploadFile(file) {
                     box-sizing: border-box !important;
                     display: flex !important;
                     flex-direction: column !important;
-                    box-shadow: -8px 0 40px rgba(0,0,0,0.5) !important;
                 `;
 
                 panel.innerHTML = `

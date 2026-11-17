@@ -5,10 +5,20 @@
 :root {
     --notes-border: var(--text);
     --comment-contrast: rgba(58, 58, 58, 0.85);
+
+    /* ===== [新增] 右側面板切割寬度 ===== */
+    --note-panel-width: max(25vw, 250px);
+
+    /* ===== [新增] 面板不透明底色（參考 Tree-nav 的 --tree-mask-bg）=====
+       主題的 --bg 可能帶透明度（Orange 主題深色為 rgba(8,5,0,.74)），
+       直接拿來當面板背景會透出底下的橫幅／文件列表。
+       這裡提供一塊實色底，再由半透明的 --bg 疊在上面保留主題色調。 */
+    --note-mask-bg: #ffffff;
 }
 
 :root .theme-dark {
     --comment-contrast: rgba(214, 214, 214, 0.8);
+    --note-mask-bg: #080500;
 }
 
 /* ============================================
@@ -38,26 +48,44 @@
     pointer-events: auto;
     display: flex;
     flex-direction: column;
-    background: var(--bg);
+    /* 分割模式不再鋪不透明底色：面板區域由頁面真正讓位，直接透出頁面背景 */
+    background: transparent;
     position: fixed;
     margin: 0;
     padding: 0;
     height: 100%;
     width: 100%;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    /*backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);*/
+}
+
+/* 手機全屏 sheet 與桌面原生全屏仍需要可讀的實色底 */
+.note-panel.note-mobile,
+.note-panel.note-fullscreen {
+    background-color: var(--note-mask-bg);
+    background-image: linear-gradient(var(--bg), var(--bg));
+}
+
+/* 拖曳分界線時暫時補回不透明底，避免主頁面圖標穿透、留下拖影 */
+body.note-panel-resizing .note-panel.note-desktop,
+body.tree-resizing .note-panel.note-desktop {
+    background-color: var(--note-mask-bg);
+    background-image: linear-gradient(var(--bg), var(--bg));
 }
 
 .note-panel.note-desktop {
     top: 0;
     right: 0;
     height: 100vh;
-    width: 480px;
-    max-width: 92vw;
+    height: 100dvh;
+    /* ===== [修改] 寬度改由 CSS 變數驅動（右側切割） ===== */
+    width: var(--note-panel-width, 480px);
+    /* 最小寬度：避免面板被拖得過窄，內容擠成一團 */
+    min-width: 300px;
+    /*max-width: 92vw;*/
     animation: slideRight 0.3s ease-out;
     border-left: 2px solid var(--text);
     border-radius: 0;
-    background: var(--bg);
     z-index: 10;
 }
 
@@ -74,6 +102,7 @@
     bottom: 0;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     z-index: 10;
     max-width: none;
     border-radius: 0;
@@ -82,7 +111,6 @@
     backdrop-filter: none;
     border: none;
     animation: none;
-    background: var(--bg);
     box-shadow: none;
 }
 
@@ -628,6 +656,7 @@
 
 .note-items {
     flex: 1;
+    min-height: 0;   /* Safari：不讓內容把輸入框頂出面板 */
     overflow-y: auto;
     padding: 6px;
     display: flex;
@@ -1664,11 +1693,13 @@
    ============================================ */
 
 .note-inline-att {
-    display: inline-flex;
+    display: flex;          /* [改] inline-flex → flex，獨佔一行 */
     align-items: center;
     gap: 2px;
     margin: 2px 0;
     white-space: nowrap;
+    width: fit-content;     /* [改] 讓底線/hover 只覆蓋文字寬度，不撐滿整行 */
+    max-width: 100%;
 }
 
 .note-att-icon {
@@ -1956,7 +1987,9 @@
         width: 100%;
         max-width: 100%;
         height: 100vh;
+        height: 100dvh;
         max-height: 100vh;
+        max-height: 100dvh;
         border-radius: 0;
         border-left: none;
         border-right: none;
@@ -2305,4 +2338,527 @@ input[type="datetime-local"] {
     border-color: var(--bg);
     border-radius: 3px;
     color: var(--bg);
+}
+
+/* ============================================================
+   ★★★ [新增] Notes 側邊欄：右側切割模式（參考 tree-nav） ★★★
+   ============================================================ */
+
+/* ---------- 橫屏：右側欄展開時，主界面讓位 ---------- */
+
+@media (orientation: landscape) and (min-width: 769px) {
+
+    /* 頂欄右側留出面板寬度 */
+    body.note-panel-layout.note-panel-open > #banner {
+        margin-right: var(--note-panel-width);
+        box-sizing: border-box;
+        transition: margin-right .2s ease;
+        width: auto;
+    }
+
+    /* 主內容區右側 padding */
+    body.note-panel-layout.note-panel-open > #root {
+        padding-right: var(--note-panel-width);
+        box-sizing: border-box;
+        transition: padding-right .2s ease;
+    }
+
+    /* 底部工具欄 */
+    body.note-panel-layout.note-panel-open .bottom-bar-stack-positioner {
+        /* 右側留出 2px 給 Notes 分界線；左側交給 Tree-nav */
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+
+    /* 音頻條 */
+    body.note-panel-layout.note-panel-open #mmp-audio {
+        right: var(--note-panel-width);
+        left: 0;
+        width: auto;
+        transition: right .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) #mmp-audio {
+        right: 0;
+        left: 0;
+        width: auto;
+    }
+
+    /* 檔案預覽對話框 */
+    body.note-panel-layout.note-panel-open .dialog-backdrop.file-show {
+        /* 留出 2px 給 Notes 的左側分界線；left 交給 Tree-nav 決定 */
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+        transition: right .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) .dialog-backdrop.file-show {
+        right: 0;
+        width: auto;
+    }
+
+    /* 全屏對話框 */
+    body.note-panel-layout.note-panel-open .dialog-backdrop.dv-dialog-fullscreen {
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+        transition: right .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) .dialog-backdrop.dv-dialog-fullscreen {
+        right: 0;
+        width: auto;
+    }
+
+    /* ---------- resizer：貼面板左緣 ---------- */
+    .note-panel-resizer {
+        position: absolute;
+        top: 0;
+        left: -4px;
+        width: 14px;
+        height: 100%;
+        z-index: 20;
+        cursor: col-resize;
+        touch-action: none;
+        user-select: none;
+        background: transparent;
+        margin-left: 3px;
+    }
+    .note-panel-resizer::before {
+        content: '';
+        position: absolute;
+        inset: -6px -4px;
+        background: transparent;
+    }
+    .note-panel-resizer::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 1px;
+        background: var(--faint-contrast);
+        transition: width .15s ease, background-color .15s ease;
+    }
+    .note-panel-resizer:hover::after,
+    body.note-panel-resizing .note-panel-resizer::after {
+        width: 2px;
+        background: var(--text);
+    }
+    .note-panel-resizer-grip {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        transform: translate(-50%, -50%);
+        width: 10px;
+        height: 30px;
+        display: flex;
+        flex-direction: column;     /* [改] 縱向排列 */
+        align-items: center;
+        justify-content: center;
+        gap: 2px;                    /* [改] 上下箭頭間距 */
+        background: var(--bg);
+        border: 1px solid var(--faint-contrast);
+        border-radius: 4px;
+        color: var(--faint-contrast);
+        opacity: .85;
+        pointer-events: none;
+        transition: color .15s ease, border-color .15s ease, opacity .15s ease, transform .15s ease;
+    }
+    .note-panel-resizer-grip::before,
+    .note-panel-resizer-grip::after {
+        content: '';
+        display: block;
+        width: 0;
+        height: 0;
+        background: transparent;
+        border-radius: 0;
+    }
+    /* [改] 上箭頭 ▲ */
+    .note-panel-resizer-grip::before {
+        border-left: 3px solid transparent;
+        border-right: 3px solid transparent;
+        border-bottom: 4px solid currentColor;
+        border-top: none;
+    }
+    /* [改] 下箭頭 ▼ */
+    .note-panel-resizer-grip::after {
+        border-left: 3px solid transparent;
+        border-right: 3px solid transparent;
+        border-top: 4px solid currentColor;
+        border-bottom: none;
+    }    }
+    .note-panel-resizer:hover .note-panel-resizer-grip,
+    body.note-panel-resizing .note-panel-resizer-grip {
+        color: var(--text);
+        border-color: var(--text);
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1.15);
+    }
+
+    body.note-panel-resizing {
+        cursor: col-resize;
+        user-select: none;
+    }
+    body.note-panel-resizing #banner,
+    body.note-panel-resizing #root,
+    body.note-panel-resizing #mmp-audio,
+    body.note-panel-resizing .dialog-backdrop.file-show,
+    body.note-panel-resizing .bottom-bar-stack-positioner {
+        transition: none;
+    }
+
+
+/* ---------- 非橫屏/手機：不讓位、不顯示 resizer ---------- */
+@media (orientation: portrait), (max-width: 768px) {
+    .note-panel-resizer { display: none; }
+}
+
+/* ============================================================
+   ★★★ Notes 側邊欄：右側切割模式（參考 tree-nav） ★★★
+   ============================================================ */
+
+:root {
+    --note-panel-width: max(25vw, 300px);
+}
+
+/* ---------- 橫屏：右側欄展開時，主界面讓位 ---------- */
+@media (orientation: landscape) and (min-width: 769px) {
+
+    /* 頂欄 */
+    body.note-panel-layout.note-panel-open > #banner {
+        margin-right: var(--note-panel-width);
+        box-sizing: border-box;
+        transition: margin-right .2s ease;
+        width: auto;
+    }
+
+    /* 主內容 */
+    body.note-panel-layout.note-panel-open > #root {
+        padding-right: var(--note-panel-width);
+        box-sizing: border-box;
+        transition: padding-right .2s ease;
+    }
+
+    /* 底部工具欄 */
+    body.note-panel-layout.note-panel-open .bottom-bar-stack-positioner {
+        /* 右側留出 2px 給 Notes 分界線；左側交給 Tree-nav */
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+
+    /* ★ Music Player：讓位（左 0、右留面板寬） */
+    body.note-panel-layout.note-panel-open #mmp-audio {
+        right: var(--note-panel-width);
+        left: 0;
+        width: auto;
+        transition: right .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) #mmp-audio {
+        right: 0;
+        left: 0;
+        width: auto;
+    }
+
+    /* ★ 圖片/影片預覽：讓位 */
+    body.note-panel-layout.note-panel-open .dialog-backdrop.file-show {
+        /* 留出 2px 給 Notes 的左側分界線；left 交給 Tree-nav 決定 */
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+        transition: right .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) .dialog-backdrop.file-show {
+        right: 0;
+        width: auto;
+    }
+
+    /* ★ 全屏對話框：讓位 */
+    body.note-panel-layout.note-panel-open .dialog-backdrop.dv-dialog-fullscreen {
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+        transition: right .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) .dialog-backdrop.dv-dialog-fullscreen {
+        right: 0;
+        width: auto;
+    }
+
+    /* ---------- resizer：貼面板左緣 ---------- */
+    .note-panel-resizer {
+        position: absolute;
+        top: 0;
+        left: -4px;
+        width: 14px;
+        height: 100%;
+        z-index: 20;
+        cursor: col-resize;
+        touch-action: none;
+        user-select: none;
+        background: transparent;
+        margin-left: 3px;
+    }
+    .note-panel-resizer::before {
+        content: '';
+        position: absolute;
+        inset: -6px -4px;
+        background: transparent;
+    }
+    .note-panel-resizer::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 1px;
+        background: var(--faint-contrast);
+        transition: width .15s ease, background-color .15s ease;
+    }
+    .note-panel-resizer:hover::after,
+    body.note-panel-resizing .note-panel-resizer::after {
+        width: 2px;
+        background: var(--text);
+    }
+    .note-panel-resizer-grip {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        transform: translate(-50%, -50%);
+        width: 10px;
+        height: 30px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        background: var(--bg);
+        border: 1px solid var(--faint-contrast);
+        border-radius: 4px;
+        color: var(--faint-contrast);
+        opacity: .85;
+        pointer-events: none;
+        transition: color .15s ease, border-color .15s ease, opacity .15s ease, transform .15s ease;
+    }
+    .note-panel-resizer-grip::before,
+    .note-panel-resizer-grip::after {
+        content: '';
+        display: block;
+        width: 0;
+        height: 0;
+        background: transparent;
+        border-radius: 0;
+    }
+    .note-panel-resizer-grip::before {
+        border-left: 3px solid transparent;
+        border-right: 3px solid transparent;
+        border-bottom: 4px solid currentColor;
+        border-top: none;
+    }
+    .note-panel-resizer-grip::after {
+        border-left: 3px solid transparent;
+        border-right: 3px solid transparent;
+        border-top: 4px solid currentColor;
+        border-bottom: none;
+    }
+    .note-panel-resizer:hover .note-panel-resizer-grip,
+    body.note-panel-resizing .note-panel-resizer-grip {
+        color: var(--text);
+        border-color: var(--text);
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1.15);
+    }
+
+    body.note-panel-resizing {
+        cursor: col-resize;
+        user-select: none;
+    }
+    body.note-panel-resizing #banner,
+    body.note-panel-resizing #root,
+    body.note-panel-resizing #mmp-audio,
+    body.note-panel-resizing .dialog-backdrop.file-show,
+    body.note-panel-resizing .dialog-backdrop.dv-dialog-fullscreen,
+    body.note-panel-resizing .bottom-bar-stack-positioner {
+        transition: none;
+    }
+}
+
+/* ---------- 豎屏：頂部讓位（參照 tree-nav 的豎屏邏輯） ---------- */
+@media (orientation: portrait) {
+
+    body.note-panel-layout.note-panel-open > #banner {
+        margin-top: var(--note-panel-height, 0px);
+        box-sizing: border-box;
+        transition: margin-top .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) > #banner {
+        margin-top: 0;
+        box-sizing: border-box;
+    }
+
+    body.note-panel-layout.note-panel-open header {
+        top: var(--note-panel-height, 0px);
+    }
+    body.note-panel-layout:not(.note-panel-open) header {
+        top: 0;
+    }
+
+    body.note-panel-layout.hfs-tree-open .bottom-bar-stack-positioner {
+        bottom: 0; left: 0; right: 0; width: 100%;
+    }
+
+    body.note-panel-layout #mmp-audio {
+        left: 0;
+        right: 0;
+        width: auto;
+    }
+
+    body.note-panel-layout.note-panel-open .dialog-backdrop.file-show {
+        top: var(--note-panel-height, 0px);
+        bottom: 0;
+        height: auto;
+        transition: top .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) .dialog-backdrop.file-show {
+        top: 0;
+        bottom: 0;
+        height: auto;
+    }
+
+    body.note-panel-layout.note-panel-open .dialog-backdrop.dv-dialog-fullscreen {
+        top: var(--note-panel-height, 0px);
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: auto;
+        height: auto;
+        transition: top .2s ease;
+    }
+    body.note-panel-layout:not(.note-panel-open) .dialog-backdrop.dv-dialog-fullscreen {
+        top: 0;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: auto;
+        height: auto;
+    }
+
+    .note-panel-resizer { display: none; }
+}
+
+/* ---------- 非橫屏/手機：不顯示 resizer ---------- */
+@media (max-width: 768px) {
+    .note-panel-resizer { display: none; }
+}
+
+/* ============================================================
+   與 Tree-nav 的窄屏聯動
+   ------------------------------------------------------------
+   兩者同時打開時，Notes 讓出 Tree-nav 佔用的頂部（直向）或
+   左側（橫向）空間；Tree-nav 既有的邊框／內陰影就是天然的分界線。
+   Tree-nav 關閉後 Notes 自動恢復滿版，兩者仍可獨立開關。
+   ============================================================ */
+@media (max-width: 768px) {
+    body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .note-panel {
+        top: var(--tree-mobile-h, 0px);
+        bottom: 0;
+        height: auto;
+        max-height: none;
+    }
+}
+
+@media (max-width: 768px) and (orientation: landscape) {
+    body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .note-panel {
+        top: 0;
+        bottom: 0;
+        left: var(--tree-width, 0px);
+        right: 0;
+        width: auto;
+        height: auto;
+        max-width: none;
+    }
+}
+
+@media (orientation: portrait) and (min-width: 769px) {
+    body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .note-panel.note-desktop {
+        top: var(--tree-mobile-h, 0px);
+        bottom: 0;
+        height: auto;
+        max-height: none;
+    }
+
+    /* 直向平板也讓頁面真正空出右側 Notes 區域，面板才可以透明 */
+    body.note-panel-layout.note-panel-open > #banner {
+        margin-right: calc(var(--note-panel-width) + 2px);
+        box-sizing: border-box;
+        width: auto;
+    }
+    body.note-panel-layout.note-panel-open > #root {
+        padding-right: calc(var(--note-panel-width) + 2px);
+        box-sizing: border-box;
+    }
+    body.note-panel-layout.note-panel-open .bottom-bar-stack-positioner {
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+    body.note-panel-layout.note-panel-open #mmp-audio {
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+
+    /* 直向平板同時開 Tree：banner/header 必須真的讓到 Folders 列下方，
+       否則透明樹欄會直接看到後方的 banner */
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open > #banner {
+        margin-top: var(--tree-mobile-h);
+        margin-right: calc(var(--note-panel-width) + 2px);
+        box-sizing: border-box;
+        width: auto;
+    }
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open header {
+        top: var(--tree-mobile-h);
+    }
+
+    /* 直向平板：file-show 也留出 Notes 左側 2px 分界線 */
+    body.note-panel-layout.note-panel-open .dialog-backdrop.file-show {
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+    body.note-panel-layout.note-panel-open .dialog-backdrop.dv-dialog-fullscreen {
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+
+    /* Tree-nav + Notes 同時打開：file-show 同時避開頂部樹欄與右側 Notes */
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .dialog-backdrop.file-show {
+        top: calc(var(--tree-mobile-h) + 1px);
+        right: calc(var(--note-panel-width) + 2px);
+        bottom: 0;
+        height: auto;
+        width: auto;
+    }
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .dialog-backdrop.dv-dialog-fullscreen {
+        top: calc(var(--tree-mobile-h) + 1px);
+        right: calc(var(--note-panel-width) + 2px);
+        left: 0;
+        bottom: 0;
+        width: auto;
+        height: auto;
+    }
+}
+
+/* ============================================================
+   Tree-nav + Notes 同時打開：
+   file-show 左右一起內縮，避免蓋住任何一側的分界線與面板
+   ============================================================ */
+@media (orientation: landscape) and (min-width: 769px) {
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .dialog-backdrop.file-show {
+        left: calc(var(--tree-width) + 1px);
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .dialog-backdrop.dv-dialog-fullscreen {
+        left: calc(var(--tree-width) + 1px);
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
+    /* 底部分頁列也同時避開兩側，避免 paging 按鈕穿到 Tree-nav 背後 */
+    html body.hfs-tree-layout.hfs-tree-open.note-panel-layout.note-panel-open .bottom-bar-stack-positioner {
+        left: calc(var(--tree-width) + 1px);
+        right: calc(var(--note-panel-width) + 2px);
+        width: auto;
+    }
 }
