@@ -6,8 +6,8 @@
     --notes-border: var(--text);
     --comment-contrast: rgba(58, 58, 58, 0.85);
 
-    /* ===== [新增] 右側面板切割寬度 ===== */
-    --note-panel-width: max(25vw, 250px);
+    /* ===== [修改] 右側面板切割寬度（px 固定，由 JS 依使用者拖曳結果設定） ===== */
+    --note-panel-width: 480px;
 
     /* ===== [新增] 面板不透明底色（參考 Tree-nav 的 --tree-mask-bg）=====
        主題的 --bg 可能帶透明度（Orange 主題深色為 rgba(8,5,0,.74)），
@@ -78,19 +78,15 @@ body.tree-resizing .note-panel.note-desktop {
     right: 0;
     height: 100vh;
     height: 100dvh;
-    /* ===== [修改] 寬度改由 CSS 變數驅動（右側切割） ===== */
+    /* ===== [修改] 寬度由 CSS 變數（px）驅動（右側切割） ===== */
     width: var(--note-panel-width, 480px);
     /* 最小寬度：避免面板被拖得過窄，內容擠成一團 */
     min-width: 300px;
     /*max-width: 92vw;*/
     animation: slideRight 0.3s ease-out;
-    border-left: 2px solid var(--text);
+    border-left: 1px solid var(--faint-contrast);
     border-radius: 0;
     z-index: 10;
-}
-
-.note-panel.note-desktop.note-closing {
-    animation: slideLeft 0.3s ease-in forwards;
 }
 
 /* 全屏模式 */
@@ -123,19 +119,9 @@ body.tree-resizing .note-panel.note-desktop {
     to { transform: translateX(0); }
 }
 
-@keyframes slideLeft {
-    from { transform: translateX(0); }
-    to { transform: translateX(100%); }
-}
-
 @keyframes slideUp {
     from { transform: translateY(100%); }
     to { transform: translateY(0); }
-}
-
-@keyframes slideDown {
-    from { transform: translateY(0); }
-    to { transform: translateY(100%); }
 }
 
 @keyframes fadeIn {
@@ -2001,10 +1987,6 @@ body.tree-resizing .note-panel.note-desktop {
         box-shadow: none;
     }
     
-    .note-panel.note-desktop.note-closing {
-        animation: slideDown 0.3s ease-in forwards;
-    }
-    
     .note-fullscreen-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -2410,7 +2392,7 @@ input[type="datetime-local"] {
     .note-panel-resizer {
         position: absolute;
         top: 0;
-        left: -4px;
+        left: -15px;
         width: 14px;
         height: 100%;
         z-index: 20;
@@ -2418,12 +2400,12 @@ input[type="datetime-local"] {
         touch-action: none;
         user-select: none;
         background: transparent;
-        margin-left: 3px;
+        margin-left: 0;
     }
     .note-panel-resizer::before {
         content: '';
         position: absolute;
-        inset: -6px -4px;
+        inset: -6px 0 -6px -6px;
         background: transparent;
     }
     .note-panel-resizer::after {
@@ -2431,7 +2413,8 @@ input[type="datetime-local"] {
         position: absolute;
         top: 0;
         bottom: 0;
-        left: 0;
+        left: auto;
+        right: -1px;
         width: 1px;
         background: var(--faint-contrast);
         transition: width .15s ease, background-color .15s ease;
@@ -2444,9 +2427,10 @@ input[type="datetime-local"] {
     .note-panel-resizer-grip {
         position: absolute;
         top: 50%;
-        left: 0;
-        transform: translate(-50%, -50%);
-        width: 10px;
+        left: auto;
+        right: 0;
+        transform: translate(0, -50%);
+        width: 7px;
         height: 30px;
         display: flex;
         flex-direction: column;     /* [改] 縱向排列 */
@@ -2455,7 +2439,10 @@ input[type="datetime-local"] {
         gap: 2px;                    /* [改] 上下箭頭間距 */
         background: var(--bg);
         border: 1px solid var(--faint-contrast);
-        border-radius: 4px;
+        /* 右側貼著分界線（鏡像 Tree-nav）：收平右圓角，也不畫右邊框 */
+        border-left: 1px solid var(--faint-contrast);
+        border-right: none;
+        border-radius: 4px 0 0 4px;
         color: var(--faint-contrast);
         opacity: .85;
         pointer-events: none;
@@ -2489,7 +2476,7 @@ input[type="datetime-local"] {
         color: var(--text);
         border-color: var(--text);
         opacity: 1;
-        transform: translate(-50%, -50%) scale(1.15);
+        transform: translate(0, -50%) scale(1.15);
     }
 
     body.note-panel-resizing {
@@ -2515,7 +2502,7 @@ input[type="datetime-local"] {
    ============================================================ */
 
 :root {
-    --note-panel-width: max(25vw, 300px);
+    --note-panel-width: 480px;
 }
 
 /* ---------- 橫屏：右側欄展開時，主界面讓位 ---------- */
@@ -2583,7 +2570,7 @@ input[type="datetime-local"] {
     .note-panel-resizer {
         position: absolute;
         top: 0;
-        left: -4px;
+        left: -15px;
         width: 14px;
         height: 100%;
         z-index: 20;
@@ -2591,12 +2578,12 @@ input[type="datetime-local"] {
         touch-action: none;
         user-select: none;
         background: transparent;
-        margin-left: 3px;
+        margin-left: 0;
     }
     .note-panel-resizer::before {
         content: '';
         position: absolute;
-        inset: -6px -4px;
+        inset: -6px 0 -6px -6px;
         background: transparent;
     }
     .note-panel-resizer::after {
@@ -2604,7 +2591,8 @@ input[type="datetime-local"] {
         position: absolute;
         top: 0;
         bottom: 0;
-        left: 0;
+        left: auto;
+        right: -1px;
         width: 1px;
         background: var(--faint-contrast);
         transition: width .15s ease, background-color .15s ease;
@@ -2617,9 +2605,10 @@ input[type="datetime-local"] {
     .note-panel-resizer-grip {
         position: absolute;
         top: 50%;
-        left: 0;
-        transform: translate(-50%, -50%);
-        width: 10px;
+        left: auto;
+        right: 0;
+        transform: translate(0, -50%);
+        width: 7px;
         height: 30px;
         display: flex;
         flex-direction: column;
@@ -2628,7 +2617,10 @@ input[type="datetime-local"] {
         gap: 2px;
         background: var(--bg);
         border: 1px solid var(--faint-contrast);
-        border-radius: 4px;
+        /* 右側貼著分界線（鏡像 Tree-nav）：收平右圓角，也不畫右邊框 */
+        border-left: 1px solid var(--faint-contrast);
+        border-right: none;
+        border-radius: 4px 0 0 4px;
         color: var(--faint-contrast);
         opacity: .85;
         pointer-events: none;
@@ -2660,7 +2652,7 @@ input[type="datetime-local"] {
         color: var(--text);
         border-color: var(--text);
         opacity: 1;
-        transform: translate(-50%, -50%) scale(1.15);
+        transform: translate(0, -50%) scale(1.15);
     }
 
     body.note-panel-resizing {

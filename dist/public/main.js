@@ -8,34 +8,53 @@
     const CACHE_ACTIVE_CATEGORY = 'notes_activeCategory';
     const CACHE_CATEGORY_ORDER = 'notes_categoryOrder';
 
-    // ===== [新增] 側邊欄寬度快取（vw 百分比，參考 tree-nav）=====
-    const CACHE_PANEL_RATIO = 'notes_panelRatio';
-    const DEFAULT_PANEL_RATIO = 25;
-    const PANEL_RATIO_MIN = 12;
-    const PANEL_RATIO_MAX = 55;
-    const PANEL_MIN_PX = 300;   // 面板最小實際寬度
+    // ===== [修改] 側邊欄寬度快取（px 固定寬度）=====
+    // 寬度以 px 記錄，瀏覽器/頁面比例再怎麼變，面板寬度都保持不變。
+    const CACHE_PANEL_WIDTH = 'notes_panelWidth';   // 新：px
+    const CACHE_PANEL_RATIO = 'notes_panelRatio';   // 舊：vw 百分比，只用於一次性遷移
+    const DEFAULT_PANEL_WIDTH = 480;                // 預設面板寬度（px）
+    const PANEL_WIDTH_MIN = 300;                    // 面板最小實際寬度（px）
+    const PANEL_WIDTH_MAX_VIEWPORT = 0.55;          // 最多佔目前視窗 55%，避免小視窗被整個蓋住
 
-    // 把 300px 下限換算成目前視窗的 vw，確保面板永遠不窄於 300px
-    function getPanelRatioMin(vw = window.innerWidth) {
-        if (!vw || vw <= 0) return PANEL_RATIO_MIN;
-        return Math.min(PANEL_RATIO_MAX, Math.max(PANEL_RATIO_MIN, (PANEL_MIN_PX / vw) * 100));
+    function getPanelWidthMax(vw = window.innerWidth) {
+        if (!vw || vw <= 0) return Infinity;
+        return Math.max(PANEL_WIDTH_MIN, Math.round(vw * PANEL_WIDTH_MAX_VIEWPORT));
     }
-    function clampPanelRatio(val, vw = window.innerWidth) {
-        if (!isFinite(val)) val = DEFAULT_PANEL_RATIO;
-        return Math.max(getPanelRatioMin(vw), Math.min(PANEL_RATIO_MAX, val));
+    function clampPanelWidth(val, vw = window.innerWidth) {
+        if (!isFinite(val)) val = DEFAULT_PANEL_WIDTH;
+        return Math.round(Math.max(PANEL_WIDTH_MIN, Math.min(getPanelWidthMax(vw), val)));
     }
 
-    function loadPanelRatio() {
+    function loadPanelWidth() {
         try {
-            const v = parseFloat(localStorage.getItem(CACHE_PANEL_RATIO));
-            if (isFinite(v)) return clampPanelRatio(v);
+            const raw = localStorage.getItem(CACHE_PANEL_WIDTH);
+            const v = parseFloat(raw);
+            if (raw !== null && isFinite(v) && v > 0) return clampPanelWidth(v);
+
+            // 舊版存的是 vw 百分比，依目前視窗換算成 px 後遷移，之後就固定不再跟著視窗縮放
+            const oldRatio = parseFloat(localStorage.getItem(CACHE_PANEL_RATIO));
+            if (isFinite(oldRatio) && oldRatio > 0) {
+                const migrated = clampPanelWidth((oldRatio / 100) * window.innerWidth);
+                try {
+                    localStorage.setItem(CACHE_PANEL_WIDTH, String(migrated));
+                    localStorage.removeItem(CACHE_PANEL_RATIO);
+                } catch {}
+                return migrated;
+            }
         } catch {}
-        return clampPanelRatio(DEFAULT_PANEL_RATIO);
+        return clampPanelWidth(DEFAULT_PANEL_WIDTH);
     }
-    function savePanelRatio(val) {
-        val = clampPanelRatio(val);
+    function savePanelWidth(val) {
+        val = clampPanelWidth(val);
         if (!isFinite(val)) return;
-        try { localStorage.setItem(CACHE_PANEL_RATIO, String(val)); } catch {}
+        try { localStorage.setItem(CACHE_PANEL_WIDTH, String(val)); } catch {}
+    }
+    // 只做「不超出視窗」的顯示保護，不回寫已儲存的 px 寬度：
+    // 視窗變窄時面板暫時收斂，視窗還原後寬度回到使用者設定的值。
+    function applyPanelWidthToDom(val) {
+        const safe = clampPanelWidth(val);
+        document.body.style.setProperty('--note-panel-width', safe + 'px');
+        return safe;
     }
 
     // ===== [新增] 面板展開狀態持久化 =====
@@ -1674,7 +1693,6 @@ async function uploadFile(file) {
         const [searchTerm, setSearchTerm] = useState('');
         const [showSearch, setShowSearch] = useState(false);
         const [currentMatch, setCurrentMatch] = useState(0);
-        const [closing, setClosing] = useState(false);
         const [fontSize, setFontSize] = useState(() => {
             try {
                 return parseInt(localStorage.getItem('notes_fontSize')) || 14;
@@ -1747,9 +1765,9 @@ async function uploadFile(file) {
         const currentOffsetRef = useRef(0);
         const fullContentFallbackRef = useRef({});
         const [sending, setSending] = useState(false);
-        // ===== [新增] 側邊欄寬度 state / ref（vw）+ 展開狀態 =====
-        const [panelRatio, setPanelRatio] = useState(loadPanelRatio);
-        const panelRatioRef = useRef(panelRatio);
+        // ===== [修改] 側邊欄寬度 state / ref（px）+ 展開狀態 =====
+        const [panelWidth, setPanelWidth] = useState(loadPanelWidth);
+        const panelWidthRef = useRef(panelWidth);
         const panelResizeDragRef = useRef(null);
         const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
         // ===== [/新增] =====
@@ -1799,13 +1817,8 @@ async function uploadFile(file) {
         useEffect(() => {
             const handleResize = () => {
                 setIsMobile(window.innerWidth <= 768);
-                // 視窗變窄時，12vw 可能已不足 300px，重新換算下限
-                const clamped = clampPanelRatio(panelRatioRef.current);
-                if (Math.abs(clamped - panelRatioRef.current) > 0.01) {
-                    panelRatioRef.current = clamped;
-                    setPanelRatio(clamped);
-                    savePanelRatio(clamped);
-                }
+                // 寬度已用 px 記錄：視窗比例變化時不重新換算，只做不超出視窗的顯示保護
+                applyPanelWidthToDom(panelWidthRef.current);
             };
             handleResize();
             window.addEventListener('resize', handleResize);
@@ -1832,13 +1845,12 @@ async function uploadFile(file) {
         useEffect(() => { isFullscreenRef.current = isFullscreen; }, [isFullscreen]);
         useEffect(() => { globalActiveTab = activeTab; }, [activeTab]);
 
-        // ===== [新增] 套用 panel 寬度（vw）+ body class 同步 =====
-        useEffect(() => { panelRatioRef.current = panelRatio; }, [panelRatio]);
+        // ===== [修改] 套用 panel 寬度（px）+ body class 同步 =====
+        useEffect(() => { panelWidthRef.current = panelWidth; }, [panelWidth]);
 
         useEffect(() => {
-            const safeRatio = clampPanelRatio(panelRatio);
-            document.body.style.setProperty('--note-panel-width', safeRatio + 'vw');
-        }, [panelRatio]);
+            applyPanelWidthToDom(panelWidth);
+        }, [panelWidth]);
 
         useEffect(() => {
             document.body.classList.add('note-panel-layout');
@@ -2669,7 +2681,7 @@ async function uploadFile(file) {
             return tabNames[tabKey] || tabKey;
         }, [tabNames]);
 
-        // ===== [新增] 側邊欄拖拽調寬 handlers（vw、貼右側往左拖變寬）=====
+        // ===== [修改] 側邊欄拖拽調寬 handlers（px、貼右側往左拖變寬）=====
         const handlePanelResizeStart = useCallback((e) => {
             if (isFullscreenRef.current) return;
             if (window.innerWidth <= 768) return;
@@ -2677,11 +2689,12 @@ async function uploadFile(file) {
             e.preventDefault();
             e.stopPropagation();
             const vw = window.innerWidth;
+            const visualWidth = clampPanelWidth(panelWidthRef.current, vw);
             panelResizeDragRef.current = {
                 startX: e.clientX,
-                startRatio: panelRatioRef.current,
+                startWidth: visualWidth,
                 vw,
-                lastRatio: panelRatioRef.current,
+                lastWidth: visualWidth,
                 moved: false
             };
             try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
@@ -2697,11 +2710,11 @@ async function uploadFile(file) {
                 d.moved = true;
             }
             e.preventDefault();
-            let next = d.startRatio + (-dx / d.vw) * 100;
-            // 最小寬度 300px（換算成目前視窗的 vw）
-            next = Math.max(getPanelRatioMin(d.vw), Math.min(PANEL_RATIO_MAX, next));
-            d.lastRatio = next;
-            document.body.style.setProperty('--note-panel-width', next + 'vw');
+            // 往左拖變寬：以 px 直接加減，不受頁面比例影響
+            let next = d.startWidth - dx;
+            next = clampPanelWidth(next, d.vw);
+            d.lastWidth = next;
+            document.body.style.setProperty('--note-panel-width', next + 'px');
         }, []);
 
         const handlePanelResizeEnd = useCallback((e) => {
@@ -2711,18 +2724,23 @@ async function uploadFile(file) {
             try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
             document.body.classList.remove('note-panel-resizing');
             if (!d.moved) return;
-            const finalRatio = clampPanelRatio(d.lastRatio);
-            setPanelRatio(finalRatio);
-            savePanelRatio(finalRatio);
+            const finalWidth = clampPanelWidth(d.lastWidth);
+            setPanelWidth(finalWidth);
+            savePanelWidth(finalWidth);
         }, []);
-        // ===== [/新增] =====
+        // ===== [/修改] =====
         const handleClose = () => {
             document.body.style.overflow = '';
             document.body.style.touchAction = '';
             document.body.style.overscrollBehavior = '';
 
-            // [新增] 立即移除讓位 class，避免面板卸載後主界面仍被推開
+            // 立即移除讓位 class，避免面板卸載後主界面仍被推開
             document.body.classList.remove('note-panel-layout', 'note-panel-open', 'note-panel-resizing');
+
+            // 同步隱藏面板本體：即使卸載被延後一幀，也不會出現透明面板壓在頁面上的畫面
+            if (panelRef.current) {
+                panelRef.current.style.display = 'none';
+            }
 
             if (observerRef.current) {
                 observerRef.current.disconnect();
@@ -2743,8 +2761,8 @@ async function uploadFile(file) {
             globalSetEditValue = null;
             globalActiveTab = '';
             setEditingNoteTs(null);
-            setClosing(true);
-            setTimeout(onClose, 300);
+            // 直接卸載，不做收起動畫：避免動畫期間面板透明化與頁面重叠的一刹那
+            onClose();
         };
 
         // [已移除] 點擊面板外部自動關閉：改為僅能透過標題列 × 按鈕關閉
@@ -4061,7 +4079,7 @@ async function uploadFile(file) {
 
         const isEditingMode = !isFullscreen && editingNoteTs !== null;
         return h('div', {
-            className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${closing ? 'note-closing' : ''} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
+            className: `note-panel ${isMobile ? 'note-mobile' : 'note-desktop'} ${isDragging ? 'note-dragging' : ''} ${isFullscreen ? 'note-fullscreen' : ''}`,
             style: { fontSize: fontSize + 'px', overscrollBehavior: 'contain' },
             ref: panelRef
         },
