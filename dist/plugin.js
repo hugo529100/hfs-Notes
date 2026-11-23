@@ -2,7 +2,7 @@ exports.version = 5.3
 exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.description = "A lightweight, convenient note-taking tool built into HFS with multi-tab support, real-time sync, auto-backup, pagination, TXT export, progressive loading, GIF video thumbnails, and unified temp file management."
 exports.apiRequired = 8.87
-exports.repo = "Hug3O/Notes"
+exports.repo = "hugo529100/hfs-Notes"
 exports.frontend_js = ['main.js']
 exports.frontend_css = ['style.css']
 
