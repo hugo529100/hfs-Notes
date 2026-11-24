@@ -1706,6 +1706,7 @@ async function uploadFile(file) {
                 return JSON.parse(localStorage.getItem(CACHE_CATEGORY_ORDER)) || [];
             } catch { return []; }
         });
+        const [categoryTabOrders, setCategoryTabOrders] = useState({});
         const [renamingTab, setRenamingTab] = useState(null);
         const [renameValue, setRenameValue] = useState('');
         const [renamingCategory, setRenamingCategory] = useState(null);
@@ -1806,8 +1807,18 @@ async function uploadFile(file) {
         const filteredTabs = useMemo(() => {
             if (!activeCategory) return tabs;
             if (activeCategory === '') return tabs;
-            return tabs.filter(tab => (categories[tab] || '') === activeCategory);
-        }, [tabs, categories, activeCategory]);
+            const matched = tabs.filter(tab => (categories[tab] || '') === activeCategory);
+            const order = categoryTabOrders[activeCategory] || [];
+            if (!order.length) return matched;
+            const rank = new Map(order.map((name, index) => [name, index]));
+            const globalRank = new Map(tabs.map((name, index) => [name, index]));
+            return matched.sort((a, b) => {
+                const ra = rank.has(a) ? rank.get(a) : 1e9;
+                const rb = rank.has(b) ? rank.get(b) : 1e9;
+                if (ra !== rb) return ra - rb;
+                return (globalRank.get(a) || 0) - (globalRank.get(b) || 0);
+            });
+        }, [tabs, categories, activeCategory, categoryTabOrders]);
 
         const getCategoryDisplayName = useCallback((cat) => {
             if (!cat) return 'All';
@@ -2025,6 +2036,9 @@ async function uploadFile(file) {
                             }
                             if (data.categoryNames) {
                                 setCategoryNames(data.categoryNames);
+                            }
+                            if (data.categoryTabOrders) {
+                                setCategoryTabOrders(data.categoryTabOrders);
                             }
                             const currentTab = activeTabRef.current;
                             if (currentTab && !data.tabs.includes(currentTab)) {
@@ -3245,6 +3259,7 @@ async function uploadFile(file) {
                     setTabNames(data.tabNames || {});
                     setCategories(data.categories || {});
                     setCategoryNames(data.categoryNames || {});
+                    setCategoryTabOrders(data.categoryTabOrders || {});
 
                     const categoryOrderFromServer = data.categoryOrder || [];
                     if (categoryOrderFromServer.length > 0) {
@@ -3962,6 +3977,24 @@ async function uploadFile(file) {
 
         const moveTab = (tab, direction) => {
             if (isGuest) { HFS.toast('Please login to manage tabs', 'info'); return; }
+
+            // 在單一分類檢視時，排序只影響該分類內部；All 檢視才調整全域順序
+            if (activeCategory) {
+                const idx = filteredTabs.indexOf(tab);
+                if (idx === -1) return;
+                const target = direction === 'left' ? idx - 1 : idx + 1;
+                if (target < 0 || target >= filteredTabs.length) return;
+                const names = [...filteredTabs];
+                [names[idx], names[target]] = [names[target], names[idx]];
+                setCategoryTabOrders(prev => ({ ...prev, [activeCategory]: names }));
+                fetch('/~/api/notes/reorder-category-tabs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ category: activeCategory, order: names })
+                }).catch(e => {});
+                return;
+            }
+
             const idx = filteredTabs.indexOf(tab);
             if (idx === -1) return;
 

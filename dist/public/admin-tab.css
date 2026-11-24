@@ -1,0 +1,25 @@
+/* Injected with the Notes admin tab */
+/* Keep the MUI tab strip first in the admin flex column, regardless of the
+   order in which other admin plugins insert their panels. */
+.notes-admin-root > .MuiTabs-root.notes-admin-tabs-root {
+    order: -1 !important;
+    flex: 0 0 auto;
+}
+.notes-admin-panel {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+.notes-admin-panel[data-active="0"],
+.notes-admin-panel:not([data-active="1"]) {
+    display: none !important;
+}
+.notes-admin-panel iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: 0;
+    background: transparent;
+}
