@@ -204,13 +204,101 @@ td.name { font-weight: 600; }
 .chip:hover { border-color: var(--accent); }
 
 /* Category 分組 */
-.tab-group { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.tab-group { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; overflow-x: hidden; }
 .tab-group:first-child { border-top: none; margin-top: 0; }
 .group-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 4px; }
 .group-head h3 { margin: 0; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 13px; }
-.category-name-input { width: 150px; font-weight: 600; }
+.category-name-input { width: 100%; font-weight: 600; }
 .display-name-input { width: 120px; }
 .category-select { width: 118px; }
+
+/* Tabs by category：表格等寬撐滿，操作鈕靠右 */
+.tab-manage-table { width: 100%; table-layout: fixed; }
+.tab-manage-table .col-tab { width: 15%; }
+.tab-manage-table .col-display { width: 15%; }
+.tab-manage-table .col-category { width: 12%; }
+.tab-manage-table .col-public { width: 6%; }
+.tab-manage-table .col-users { width: 13%; }
+.tab-manage-table .col-notes { width: 8%; }
+.tab-manage-table .col-files { width: 6%; }
+.tab-manage-table .col-attach { width: 9%; }
+.tab-manage-table .col-actions { width: 16%; }
+.tab-manage-table .col-actions .row-actions { justify-content: flex-end; flex-wrap: nowrap; gap: 4px; }
+.tab-manage-table .col-actions .small { padding: 2px 5px; }
+.tab-manage-table .display-name-input,
+.tab-manage-table .category-select,
+.tab-manage-table .users-input,
+.tab-manage-table .tab-name-cell input { width: 100%; min-width: 0; }
+.tab-manage-table td { vertical-align: middle; }
+#tab-groups { overflow-x: hidden; }
+
+/* Categories 表格：等距撐滿整個板塊，操作鈕靠右 */
+.category-table { width: 100%; table-layout: fixed; }
+.category-table .cat-handle { width: 6%; }
+.category-table .cat-name { width: 35%; overflow: hidden; }
+.category-table .cat-key { width: 25%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.category-table .cat-count { width: 10%; }
+.category-table .cat-actions { width: 24%; }
+.category-table .cat-actions .row-actions { justify-content: flex-end; flex-wrap: nowrap; gap: 4px; }
+.category-table .cat-actions .small { padding: 2px 5px; }
+.category-table td { vertical-align: middle; }
+#category-list { overflow-x: hidden; }
+
+@media (max-width: 700px) {
+    .category-table th,
+    .category-table td { padding: 2px 3px; font-size: 11px; }
+    .category-table .category-name-input { padding: 3px 4px; font-size: 11px; }
+    .category-table .cat-actions .row-actions { gap: 2px; }
+    .category-table .cat-actions .small { padding: 1px 3px; font-size: 10px; }
+}
+
+@media (max-width: 420px) {
+    .category-table .cat-key { display: none; }
+    .category-table .cat-handle { width: 8%; }
+    .category-table .cat-name { width: 50%; }
+    .category-table .cat-count { width: 12%; }
+    .category-table .cat-actions { width: 30%; }
+}
+
+/* 手機竪屏：隱藏編輯欄，只留統計與操作，避免表格穿透到頁面右側 */
+@media (orientation: portrait) and (max-width: 900px) {
+    .tab-group .col-edit { display: none !important; }
+}
+
+/* 窄寬度（不分橫豎）也隱藏編輯欄，只留統計與操作 */
+@media (max-width: 700px) {
+    .tab-group .col-edit { display: none !important; }
+}
+
+@media (orientation: portrait) and (max-width: 900px), (max-width: 700px) {
+    .tab-manage-table th,
+    .tab-manage-table td { padding: 2px 3px; font-size: 11px; }
+    .tab-manage-table .row-actions { gap: 2px; }
+    .tab-manage-table .row-actions .small { padding: 1px 3px; font-size: 10px; }
+    .tab-manage-table input,
+    .tab-manage-table select { padding: 3px 4px; font-size: 11px; }
+    .tab-manage-table .col-tab { width: 28%; }
+    .tab-manage-table .col-notes { width: 15%; }
+    .tab-manage-table .col-files { width: 12%; }
+    .tab-manage-table .col-attach { width: 19%; }
+    .tab-manage-table .col-actions { width: 26%; }
+}
+
+/* Data migration */
+.collapsible-body[hidden] { display: none !important; }
+.collapsible-body h3 { margin: 4px 0 6px; font-size: 13px; color: var(--text); text-transform: none; letter-spacing: 0; }
+.section-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.migration-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px 12px;
+    align-items: end;
+}
+.migration-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.migration-field label { font-size: 12px; color: var(--muted); }
+.migration-field select { width: 100%; }
+.migration-action button { width: 100%; }
+.migration-summary { margin-top: 8px; color: var(--muted); font-size: 12px; }
 
 /* 備份左右並排 */
 .backup-columns {
@@ -221,6 +309,7 @@ td.name { font-weight: 600; }
 }
 .backup-panel { min-width: 0; }
 .backup-panel h3 { margin-top: 0; }
+.backup-actions .row-actions { justify-content: flex-end; flex-wrap: nowrap; }
 @media (max-width: 900px) {
     .backup-columns { grid-template-columns: 1fr; }
 }
@@ -256,6 +345,12 @@ td.name { font-weight: 600; }
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 8px 14px;
 }
+.settings-group + .settings-group {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+.settings-group h3 { margin-top: 0; }
 .field { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
 .field label { font-size: 12px; color: var(--muted); }
 .field .hint { font-size: 11px; color: var(--muted); }

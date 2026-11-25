@@ -13,7 +13,8 @@ exports.config = {
         options: {
             '1. Tabs & Access': 'tabs',
             '2. Backup & Export': 'backup',
-            '3. Thumbnails': 'thumbnails'
+            '3. Thumbnails': 'thumbnails',
+            '4. Uploads': 'uploads'
         },
         label: "Configuration Category",
         helperText: "Select a category to view and edit settings.",
@@ -93,6 +94,37 @@ exports.config = {
         label: 'Backup once after server startup',
         helperText: 'When enabled, one backup is made shortly after HFS starts. Hot-reloading the plugin in the same server process will not trigger another one.',
         defaultValue: false
+    },
+
+    maxMediaSizeMB: {
+        showIf: x => x.config_tab === 'uploads',
+        type: 'number',
+        label: 'Max media upload size (MB)',
+        defaultValue: 1024,
+        min: 1,
+        max: 102400,
+        helperText: 'Limit for images, video and audio. Large files are uploaded in chunks and reassembled on the server.',
+        frontend: true
+    },
+    maxFileSizeMB: {
+        showIf: x => x.config_tab === 'uploads',
+        type: 'number',
+        label: 'Max other file upload size (MB)',
+        defaultValue: 2048,
+        min: 1,
+        max: 102400,
+        helperText: 'Limit for ordinary attachments that are not image/video/audio.',
+        frontend: true
+    },
+    uploadChunkSizeMB: {
+        showIf: x => x.config_tab === 'uploads',
+        type: 'number',
+        label: 'Upload chunk size (MB)',
+        defaultValue: 4,
+        min: 1,
+        max: 32,
+        helperText: 'Files are split into chunks of this size. Smaller chunks are safer behind proxies; larger chunks use fewer requests.',
+        frontend: true
     },
 
     useSharpPlugin: {
@@ -295,6 +327,30 @@ exports.init = async api => {
     const DOWNLOAD_TIMEOUT = 3000
     const MAX_CONCURRENT_DOWNLOADS = 3
     const MAX_LOCALIZE_TOTAL = 50
+    const DEFAULT_MAX_MEDIA_MB = 1024
+    const DEFAULT_MAX_FILE_MB = 2048
+    const DEFAULT_UPLOAD_CHUNK_MB = 4
+
+    function getConfigNumberMB(key, fallback) {
+        const value = Number(api.getConfig(key))
+        if (!isFinite(value) || value <= 0) return fallback
+        return Math.min(102400, Math.max(1, value))
+    }
+
+    function isMediaMime(mimeType) {
+        return /^(image|video|audio)\//i.test(String(mimeType || ''))
+    }
+
+    function getUploadLimitBytes(mimeType) {
+        const mb = isMediaMime(mimeType)
+            ? getConfigNumberMB('maxMediaSizeMB', DEFAULT_MAX_MEDIA_MB)
+            : getConfigNumberMB('maxFileSizeMB', DEFAULT_MAX_FILE_MB)
+        return Math.round(mb * 1024 * 1024)
+    }
+
+    function getUploadChunkBytes() {
+        return Math.round(getConfigNumberMB('uploadChunkSizeMB', DEFAULT_UPLOAD_CHUNK_MB) * 1024 * 1024)
+    }
 
     let backupTimer = null
     let backupStartTimeout = null
@@ -307,7 +363,7 @@ exports.init = async api => {
     let isApplyingTabList = false
     let lastKnownTabNames = null
 
-    // 備份節奏：以「實際經過時間」為準，每分鐘檢查一次是否到期
+    // 備份節奏：以「實際經過時間」為準，每分鐘檢查一次是否到??
     const BACKUP_CHECK_INTERVAL_MS = 60 * 1000
     const BACKUP_STARTUP_DELAY_MS = 3000
     const BACKUP_MIGRATION_DELAY_MS = 8000
@@ -321,6 +377,14 @@ exports.init = async api => {
     await fs.mkdir(THUMB_BASE_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(TEMP_DIR, { recursive: true }).catch(() => {})
     await fs.mkdir(BACKUP_DIR, { recursive: true }).catch(() => {})
+
+    // 舊版可能留下已移除的 config_tab 值（例如 manage），導向有效的分??
+    {
+        const validConfigTabs = new Set(['tabs', 'backup', 'thumbnails', 'uploads'])
+        if (!validConfigTabs.has(api.getConfig('config_tab'))) {
+            Promise.resolve(api.setConfig('config_tab', 'tabs')).catch(() => {})
+        }
+    }
 
     try {
         await fs.stat(TABS_MAP_FILE)
@@ -373,7 +437,7 @@ exports.init = async api => {
             }
         }
 
-        // categoryOrder 可以包含目前沒有 tab 的分類（獨立管理分類時使用），所以只去重、不因為沒 tab 就刪掉
+        // categoryOrder 可以包含目前沒有 tab 的分類（獨立管理分類時使用），所以只去重、不因為??tab 就刪??
         const usedCategories = new Set(Object.values(tabsMap.categories || {}).filter(Boolean))
         const categoryOrder = []
         for (const cat of tabsMap.categoryOrder || []) {
@@ -396,7 +460,7 @@ exports.init = async api => {
             }
         }
 
-        // 每個 category 內部的 tab 順序（與 order 的全域順序互相獨立）
+        // 每??category 內部??tab 順序（與 order 的全域順序互相獨立）
         const tabCategory = new Map(configTabs.map(t => [t.name, t.category || '']))
         const prevCategoryTabOrders = (tabsMap.categoryTabOrders && typeof tabsMap.categoryTabOrders === 'object') ? tabsMap.categoryTabOrders : {}
         const categoryTabOrders = {}
@@ -480,7 +544,7 @@ exports.init = async api => {
             if (tab) return getTabPublicConfig(tab)
             return false
         }
-        // 每個 tab 可再限制專屬使用者（admin 不受限）
+        // 每??tab 可再限制專屬使用者（admin 不受限）
         if (tab) {
             const cfg = getTabConfig(tab)
             const tabUsers = cfg && Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.filter(Boolean) : []
@@ -650,7 +714,7 @@ exports.init = async api => {
     }
 
     // ============================================
-    // 自我修復：tab 索引 / _tabs_map / 多出來的 tab 資料夾
+    // 自我修復：tab 索引 / _tabs_map / 多出來的 tab 資料??
     // ============================================
     const INDEX_SCAN_DEFAULT_MS = 2 * 60 * 1000
     const MISSING_FILE_GRACE_MS = 10 * 60 * 1000
@@ -683,8 +747,8 @@ exports.init = async api => {
         }
     }
 
-    // 刪除 tab 時，先把 tab 資料庫與所有附件目錄移到暫存 trash，
-    // 等 tabList 成功寫入後才真正刪除；設定失敗則搬回原位。
+    // 刪除 tab 時，先把 tab 資料庫與所有附件目錄移到暫??trash??
+    // ??tabList 成功寫入後才真正刪除；設定失敗則搬回原位??
     async function stageTabStorageForDeletion(tab, stamp) {
         const safe = safeTabFolderName(tab)
         const trashRoot = path.join(TRASH_DIR, `tab_${safe}_${stamp}_${crypto.randomBytes(2).toString('hex')}`)
@@ -723,7 +787,7 @@ exports.init = async api => {
         }
     }
 
-    // 檔名把 ISO 時間的 ":" 換成了 "_"，還原成索引使用的時間字串
+    // 檔名??ISO 時間??":" 換成??"_"，還原成索引使用的時間字??
     function noteStemToTs(stem) {
         const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})_(\d{2})_(\d{2})(\.\d{1,3})?Z$/.exec(stem)
         if (!m) return stem
@@ -759,7 +823,7 @@ exports.init = async api => {
         }
     }
 
-    // 比對 _index.json 與實際 note 檔，補上漏掉、清掉已不存在的條目
+    // 比對 _index.json 與實??note 檔，補上漏掉、清掉已不存在的條目
     async function reconcileTabIndex(tab, { force = false, throttleMs } = {}) {
         if (!tab) return null
         const prevStats = lastIndexStats.get(tab)
@@ -794,7 +858,7 @@ exports.init = async api => {
             const indexedSafe = new Set()
             for (const ts of Object.keys(notes)) indexedSafe.add(safeTabFolderName(ts))
 
-            // 檔案存在、表頭沒有 → 補一條（作者不明，標成 Recovered）
+            // 檔案存在、表頭沒????補一條（作者不明，標成 Recovered??
             for (const stem of fileStems) {
                 if (indexedSafe.has(stem)) continue
                 const ts = noteStemToTs(stem)
@@ -811,7 +875,7 @@ exports.init = async api => {
                 changed = true
             }
 
-            // 表頭有、檔案不存在 → 超過寬限期才移除，避免寫入中的新 note 被誤刪
+            // 表頭有、檔案不存在 ??超過寬限期才移除，避免寫入中的新 note 被誤??
             const now = Date.now()
             for (const ts of Object.keys(notes)) {
                 const stem = safeTabFolderName(ts)
@@ -823,7 +887,7 @@ exports.init = async api => {
                 changed = true
             }
 
-            // 掃描期間若索引被其他請求（例如新增 note）改寫，放棄這次寫入，避免蓋掉新資料
+            // 掃描期間若索引被其他請求（例如新??note）改寫，放棄這次寫入，避免蓋掉新資料
             const statAfter = await fs.stat(indexPath).catch(() => null)
             const indexChangedDuringScan = (!!statBefore !== !!statAfter)
                 || (statBefore && statAfter && (statBefore.mtimeMs !== statAfter.mtimeMs || statBefore.size !== statAfter.size))
@@ -869,7 +933,7 @@ exports.init = async api => {
         return results
     }
 
-    // 掃描 storage/tabs 裡有資料、但設定中不存在的 tab，補進 tabList
+    // 掃描 storage/tabs 裡有資料、但設定中不存在??tab，補??tabList
     let storageTabScanPromise = null
     async function ensureStorageTabsRegistered() {
         if (storageTabScanPromise) return storageTabScanPromise
@@ -976,6 +1040,57 @@ exports.init = async api => {
             scannedAt: stats ? stats.scannedAt : null,
             attachments
         }
+    }
+
+    async function collectReferencedAttachmentIds(tabs) {
+        const refs = { img: new Set(), mov: new Set(), att: new Set() }
+        for (const tab of tabs) {
+            const index = await loadTabIndex(tab)
+            for (const ts of Object.keys(index.notes || {})) {
+                const content = await loadNoteContent(tab, ts)
+                if (!content) continue
+                for (const id of extractImageIds(content)) refs.img.add(id)
+                for (const id of extractMovIds(content)) refs.mov.add(id)
+                for (const id of extractAttIds(content)) refs.att.add(id)
+            }
+        }
+        return refs
+    }
+
+    // 刪除 tab 目錄內沒有被任何 note 引用的孤立附件／縮圖
+    async function cleanTabOrphanAttachments(tab, refs) {
+        let deleted = 0
+        let freedBytes = 0
+
+        const removeFiles = async (dir, keep) => {
+            const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
+            for (const entry of entries) {
+                if (!entry.isFile() || entry.name.startsWith('.')) continue
+                if (keep(entry.name)) continue
+                const filePath = path.join(dir, entry.name)
+                try {
+                    const st = await fs.stat(filePath)
+                    await fs.unlink(filePath)
+                    deleted++
+                    freedBytes += st.size
+                } catch {}
+            }
+        }
+
+        await removeFiles(getTabImgDir(tab), name => refs.img.has(name))
+        await removeFiles(getTabMovDir(tab), name => refs.mov.has(name))
+        await removeFiles(getTabAttDir(tab), name => refs.att.has(name))
+        await removeFiles(getTabThumbDir(tab), name => {
+            if (refs.img.has(name) || refs.mov.has(name)) return true
+            const base = path.basename(name, path.extname(name)).toLowerCase()
+            for (const id of refs.mov) {
+                if (path.basename(id, path.extname(id)).toLowerCase() === base) return true
+            }
+            return false
+        })
+
+        if (deleted > 0) tabUsageCache.delete(tab)
+        return { deleted, freedBytes }
     }
 
     async function addNoteToTab(tab, ts, noteData) {
@@ -1626,7 +1741,7 @@ exports.init = async api => {
                 } catch {}
             }
 
-            // 清理超過 1 小時的 chunk 會話
+            // 清理超過 1 小時??chunk 會話
             try {
                 const chunksRoot = path.join(TEMP_DIR, 'chunks')
                 const sessionDirs = await fs.readdir(chunksRoot).catch(() => [])
@@ -1642,7 +1757,7 @@ exports.init = async api => {
                 }
             } catch {}
 
-            // 清理超過 7 天的 tab 刪除暫存（正常會在刪除成功後立即清掉）
+            // 清理超過 7 天的 tab 刪除暫存（正常會在刪除成功後立即清掉??
             try {
                 const trashEntries = await fs.readdir(TRASH_DIR, { withFileTypes: true }).catch(() => [])
                 const trashCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
@@ -1661,7 +1776,7 @@ exports.init = async api => {
     }
 
     // ============================================
-    // 備份打包：內建 ZIP 寫入器（只依賴 Node 內建 zlib）
+    // 備份打包：內??ZIP 寫入器（只依??Node 內建 zlib??
     // ============================================
     const ZIP_CRC_TABLE = (() => {
         const table = new Uint32Array(256)
@@ -1798,7 +1913,7 @@ exports.init = async api => {
         }
     }
 
-    // 解壓我們自己產生的備份 ZIP（store/deflate，UTF-8 檔名）
+    // 解壓我們自己產生的備份 ZIP（store/deflate，UTF-8 檔名??
     async function unzipToDirectory(zipPath, destDir) {
         const buf = await fs.readFile(zipPath)
         const eocdSignature = Buffer.from([0x50, 0x4b, 0x05, 0x06])
@@ -1858,7 +1973,7 @@ exports.init = async api => {
     }
 
     // ============================================
-    // 備份節奏：持久化「上次備份時間」，重啟不歸零
+    // 備份節奏：持久化「上次備份時間」，重啟不歸??
     // ============================================
     function parseBackupNameDate(name) {
         const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:\.zip)?$/i.exec(name)
@@ -1906,7 +2021,7 @@ exports.init = async api => {
         const latest = await getLatestBackupTime()
         lastBackupAt = Math.max(stored, latest)
 
-        // 全新安裝、沒有任何歷史備份：從現在開始計時，第一次備份在一個間隔之後
+        // 全新安裝、沒有任何歷史備份：從現在開始計時，第一次備份在一個間隔之??
         if (!lastBackupAt) lastBackupAt = Date.now()
         if (!stored || stored !== lastBackupAt) await writeBackupState(lastBackupAt)
 
@@ -1916,7 +2031,7 @@ exports.init = async api => {
 
     function getBackupIntervalMs() {
         const raw = api.getConfig('backupInterval')
-        // 未設定時沿用預設 6 小時；明確設 0 才代表停用
+        // 未設定時沿用預設 6 小時；明確設 0 才代表停??
         const hours = (raw === undefined || raw === null || raw === '') ? 6 : Number(raw)
         if (!isFinite(hours) || hours <= 0) return 0
         return hours * 60 * 60 * 1000
@@ -1931,14 +2046,14 @@ exports.init = async api => {
         await performScheduledBackup()
     }
 
-    // 舊版備份是散落的資料夾：啟用時自動打包成單一 zip 並移除原資料夾
+    // 舊版備份是散落的資料夾：啟用時自動打包成單一 zip 並移除原資料??
     async function migrateLegacyBackups() {
         if (isBackupRunning) return 0
         let migrated = 0
 
         const packFolder = async (folder, zipPath) => {
             try {
-                // 只處理至少一分鐘沒有變動的資料夾，避免打包到其他程序正在寫入的備份
+                // 只處理至少一分鐘沒有變動的資料夾，避免打包到其他程序正在寫入的備??
                 const st = await fs.stat(folder).catch(() => null)
                 if (!st || Date.now() - st.mtimeMs < 60 * 1000) return
                 const zst = await fs.stat(zipPath).catch(() => null)
@@ -1966,7 +2081,7 @@ exports.init = async api => {
         return migrated
     }
 
-    // 避免同一秒內連續備份覆蓋同一個 zip（尤其 rollback 前建立的安全備份）
+    // 避免同一秒內連續備份覆蓋同一??zip（尤??rollback 前建立的安全備份??
     async function getUniqueBackupTimestamp() {
         const base = Date.now()
         for (let i = 0; i < 300; i++) {
@@ -2019,7 +2134,7 @@ exports.init = async api => {
             await fs.copyFile(mapSrc, mapDst).catch(() => {})
         } catch {}
 
-        // 備份資訊（也確保 zip 永遠至少有一個檔案，避免空壓縮檔無法解壓）
+        // 備份資訊（也確保 zip 永遠至少有一個檔案，避免空壓縮檔無法解壓??
         try {
             await fs.writeFile(path.join(backupFolder, 'backup_info.json'), JSON.stringify({
                 timestamp,
@@ -2029,7 +2144,7 @@ exports.init = async api => {
             }, null, 2), 'utf-8')
         } catch {}
 
-        // 打包成單一 zip，避免每次備份都留下大量散落的資料夾與檔案
+        // 打包成單一 zip，避免每次備份都留下大量散落的資料夾與檔??
         const zipPath = path.join(BACKUP_DIR, `${timestamp}.zip`)
         let zipped = false
         try {
@@ -2109,7 +2224,7 @@ exports.init = async api => {
             }
         } catch {}
 
-        // 匯出的 txt 也打包成單一 zip
+        // 匯出??txt 也打包成單一 zip
         let zipPath = null
         if (exportFiles.length > 0) {
             const txtZipPath = path.join(BACKUP_DIR, 'txt_exports', `${timestamp}.zip`)
@@ -2128,7 +2243,7 @@ exports.init = async api => {
     async function cleanupOldBackups() {
         try {
             const raw = api.getConfig('backupRetentionDays')
-            // 未設定時沿用預設 3 天；明確設 0 代表永久保留
+            // 未設定時沿用預設 3 天；明確??0 代表永久保留
             const retentionDays = (raw === undefined || raw === null || raw === '') ? 3 : Number(raw)
             if (!isFinite(retentionDays) || retentionDays <= 0) return
             const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
@@ -2140,7 +2255,7 @@ exports.init = async api => {
                 if (entry.name.startsWith('_') || entry.name.startsWith('.')) continue
                 const isZip = !entry.isDirectory() && entry.name.toLowerCase().endsWith('.zip')
                 if (!entry.isDirectory() && !isZip) continue
-                // 用檔名裡的時間判斷，而不是 mtime（搬移/重打包後 mtime 會失真）
+                // 用檔名裡的時間判斷，而不??mtime（搬??重打包後 mtime 會失真）
                 const ts = parseBackupNameDate(entry.name)
                 if (!ts || ts >= cutoffTime) continue
                 await fs.rm(path.join(BACKUP_DIR, entry.name), { recursive: true, force: true }).catch(() => {})
@@ -2163,7 +2278,7 @@ exports.init = async api => {
         return backupJob ? { ...backupJob } : null
     }
 
-    // 啟動背景備份：立即回傳，實際工作在 server 上繼續，重新整理頁面不會中斷
+    // 啟動背景備份：立即回傳，實際工作??server 上繼續，重新整理頁面不會中斷
     function startBackupJob(trigger = 'manual') {
         if (isBackupRunning) return { started: false, job: getBackupJobState() }
 
@@ -2220,9 +2335,9 @@ exports.init = async api => {
             backupStartTimeout = null
         }
 
-        // 每分鐘檢查一次「距離上次成功備份是否已滿設定的間隔」。
+        // 每分鐘檢查一次「距離上次成功備份是否已滿設定的間隔」??
         // 以實際經過的時間為準：HFS 重啟、存設定都不會把節奏歸零，
-        // 也不會因為改一個設定就立刻多備份一次。
+        // 也不會因為改一個設定就立刻多備份一次??
         backupTimer = api.setInterval(() => {
             checkBackupDue().catch(() => {})
         }, BACKUP_CHECK_INTERVAL_MS)
@@ -2280,12 +2395,12 @@ exports.init = async api => {
             setupBackupTimer()
             setupLegacyBackupSweep()
 
-            // 啟動後檢查一次資料表：補回被覆蓋的索引、註冊多出來的 tab 資料夾
+            // 啟動後檢查一次資料表：補回被覆蓋的索引、註冊多出來??tab 資料??
             api.setTimeout(() => {
                 runFullRepair({ force: true }).catch(() => {})
             }, 15000).unref?.()
 
-            // 「伺服器啟動後立刻備份一次」：同一 HFS 程序內只做一次（熱重載不重複）
+            // 「伺服器啟動後立刻備份一次」：同一 HFS 程序內只做一次（熱重載不重複??
             const startupMark = '__hfsNotesStartupBackupDone'
             if (api.getConfig('backupOnStartup') && !globalThis[startupMark]) {
                 globalThis[startupMark] = true
@@ -2294,7 +2409,7 @@ exports.init = async api => {
                 }, 7000).unref?.()
             }
 
-            // 舊版散落的備份資料夾自動打包成 zip（延後執行，不拖慢啟動）
+            // 舊版散落的備份資料夾自動打包??zip（延後執行，不拖慢啟動）
             api.setTimeout(() => {
                 migrateLegacyBackups()
                     .then(() => cleanupOldBackups())
@@ -2305,13 +2420,13 @@ exports.init = async api => {
     lastKnownTabNames = new Set(getTabs())
 
     api.subscribeConfig(['backupInterval', 'backupRetentionDays', 'tabList', 'autoExportTxt'], () => {
-        // 不再「一存設定就立刻備份」：只重新校正節奏，逾期才補一次
+        // 不再「一存設定就立刻備份」：只重新校正節奏，逾期才補一??
         setupBackupTimer()
         checkBackupDue().catch(() => {})
         cleanupOldBackups().catch(() => {})
 
         // 若從原生設定表刪除了 tab，封存其資料夾，
-        // 否則自動掃描會把它當成「多出來的資料夾」又加回來。
+        // 否則自動掃描會把它當成「多出來的資料夾」又加回來??
         if (!isApplyingTabList) {
             const current = new Set(getTabs())
             if (lastKnownTabNames) {
@@ -2338,7 +2453,7 @@ exports.init = async api => {
     async function getTabInfo(ctx) {
         const username = getCurrentUsername(ctx)
 
-        // 偶爾掃一下 storage/tabs，讓被覆蓋後多出來的 tab 資料夾自動出現在前端與資料庫
+        // 偶爾掃一??storage/tabs，讓被覆蓋後多出來的 tab 資料夾自動出現在前端與資料庫
         if (Date.now() - lastStorageScanAt > STORAGE_SCAN_MIN_MS) {
             lastStorageScanAt = Date.now()
             ensureStorageTabsRegistered().catch(() => {})
@@ -2371,7 +2486,7 @@ exports.init = async api => {
 
         if (!isAllowed(username)) { ctx.status = 403; return }
 
-        // 依每個 tab 的專屬權限過濾
+        // 依每??tab 的專屬權限過??
         if (!isHfsAdmin(username)) {
             tabs = tabs.filter(t => isAllowed(username, t))
         }
@@ -2515,7 +2630,7 @@ exports.init = async api => {
         const limit = Math.min(parseInt(ctx.query?.limit) || PAGE_SIZE, 100)
         const summaryOnly = ctx.query?.summary === '1'
 
-        // 前端每次打開 tab（offset=0）時做一次節流掃描，補回被覆蓋掉的索引條目
+        // 前端每次打開 tab（offset=0）時做一次節流掃描，補回被覆蓋掉的索引條??
         if (offset === 0) {
             try { await reconcileTabIndex(tab, {}) } catch {}
         }
@@ -3391,8 +3506,8 @@ exports.init = async api => {
                 backupInterval: api.getConfig('backupInterval'),
                 backupRetentionDays: api.getConfig('backupRetentionDays'),
                 autoExportTxt: api.getConfig('autoExportTxt'),
-                maxImgSize: formatBytes(MAX_IMG_SIZE),
-                maxFileSize: formatBytes(MAX_FILE_SIZE),
+                maxImgSize: formatBytes(getUploadLimitBytes('image/')),
+                maxFileSize: formatBytes(getUploadLimitBytes('application/octet-stream')),
                 ffmpegPath: api.getConfig('ffmpeg_path') || 'ffmpeg',
                 thumbnailTime: api.getConfig('thumbnail_time') || '00:00:05',
                 thumbnailFormat: api.getConfig('thumbnail_format') || 'jpg',
@@ -3554,7 +3669,7 @@ exports.init = async api => {
         let swapped = false
 
         try {
-            // 先為目前資料庫建立安全備份，回滾失敗或後悔時可再用
+            // 先為目前資料庫建立安全備份，回滾失敗或後悔時可再??
             const safety = await createBackup()
             safetyBackup = safety.zipPath || safety.backupFolder
 
@@ -3575,7 +3690,7 @@ exports.init = async api => {
                 throw e
             }
 
-            // 回滾後的收尾：清快取、把備份內多出來的 tab 補進設定
+            // 回滾後的收尾：清快取、把備份內多出來??tab 補進設??
             lastIndexStats.clear()
             lastIndexScanAt.clear()
             tabUsageCache.clear()
@@ -3607,7 +3722,7 @@ exports.init = async api => {
             }
             ctx.status = 200
         } catch (e) {
-            // 尚未成功換上備份時，把原本的 tabs 放回去
+            // 尚未成功換上備份時，把原本的 tabs 放回??
             if (!swapped) {
                 const current = await fs.stat(TABS_DIR).catch(() => null)
                 const old = await fs.stat(oldTabsDir).catch(() => null)
@@ -3739,20 +3854,23 @@ exports.init = async api => {
             { key: 'useSharpPlugin', label: 'Use Sharp for thumbnails', type: 'boolean', group: 'Thumbnails' },
             { key: 'thumbQuality', label: 'Thumbnail quality', type: 'number', min: 1, max: 100, step: 1, group: 'Thumbnails' },
             { key: 'thumbPixels', label: 'Thumbnail size (px)', type: 'number', min: 50, max: 2000, step: 50, group: 'Thumbnails' },
-            { key: 'thumbnail_format', label: 'Video thumbnail format', type: 'select', options: [{ value: 'jpg', label: 'JPG' }, { value: 'gif', label: 'GIF' }], group: 'Thumbnails' },
-            { key: 'thumbnail_time', label: 'JPG thumbnail position', type: 'string', group: 'Thumbnails' },
-            { key: 'gif_width', label: 'GIF width (px)', type: 'number', min: 100, max: 800, step: 10, group: 'Thumbnails' },
-            { key: 'video_size_threshold', label: 'Long video threshold (MB)', type: 'number', min: 1, max: 100000, step: 1, group: 'Thumbnails' },
-            { key: 'short_video_start_time', label: 'Short video start time', type: 'string', group: 'Thumbnails' },
-            { key: 'short_video_duration', label: 'Short video GIF duration (s)', type: 'number', min: 1, max: 60, step: 1, group: 'Thumbnails' },
-            { key: 'short_video_fps', label: 'Short video GIF FPS', type: 'number', min: 1, max: 30, step: 1, group: 'Thumbnails' },
-            { key: 'long_video_start_time', label: 'Long video start time', type: 'string', group: 'Thumbnails' },
-            { key: 'long_video_duration', label: 'Long video GIF duration (s)', type: 'number', min: 1, max: 60, step: 1, group: 'Thumbnails' },
-            { key: 'long_video_fps', label: 'Long video GIF FPS', type: 'number', min: 1, max: 30, step: 1, group: 'Thumbnails' },
-            { key: 'backup_video_start_time', label: 'Fallback video start time', type: 'string', group: 'Thumbnails' },
-            { key: 'backup_video_duration', label: 'Fallback GIF duration (s)', type: 'number', min: 1, max: 60, step: 1, group: 'Thumbnails' },
-            { key: 'backup_video_fps', label: 'Fallback GIF FPS', type: 'number', min: 1, max: 30, step: 1, group: 'Thumbnails' },
-            { key: 'ffmpeg_path', label: 'FFmpeg path', type: 'string', group: 'Thumbnails' }
+            { key: 'thumbnail_format', label: 'Video thumbnail format', type: 'select', options: [{ value: 'jpg', label: 'JPG' }, { value: 'gif', label: 'GIF' }], group: 'Video thumbnail' },
+            { key: 'thumbnail_time', label: 'JPG thumbnail position', type: 'string', group: 'Video thumbnail' },
+            { key: 'gif_width', label: 'GIF width (px)', type: 'number', min: 100, max: 800, step: 10, group: 'Video thumbnail' },
+            { key: 'video_size_threshold', label: 'Long video threshold (MB)', type: 'number', min: 1, max: 100000, step: 1, group: 'Video thumbnail' },
+            { key: 'short_video_start_time', label: 'Short video start time', type: 'string', group: 'Video thumbnail' },
+            { key: 'short_video_duration', label: 'Short video GIF duration (s)', type: 'number', min: 1, max: 60, step: 1, group: 'Video thumbnail' },
+            { key: 'short_video_fps', label: 'Short video GIF FPS', type: 'number', min: 1, max: 30, step: 1, group: 'Video thumbnail' },
+            { key: 'long_video_start_time', label: 'Long video start time', type: 'string', group: 'Video thumbnail' },
+            { key: 'long_video_duration', label: 'Long video GIF duration (s)', type: 'number', min: 1, max: 60, step: 1, group: 'Video thumbnail' },
+            { key: 'long_video_fps', label: 'Long video GIF FPS', type: 'number', min: 1, max: 30, step: 1, group: 'Video thumbnail' },
+            { key: 'backup_video_start_time', label: 'Fallback video start time', type: 'string', group: 'Video thumbnail' },
+            { key: 'backup_video_duration', label: 'Fallback GIF duration (s)', type: 'number', min: 1, max: 60, step: 1, group: 'Video thumbnail' },
+            { key: 'backup_video_fps', label: 'Fallback GIF FPS', type: 'number', min: 1, max: 30, step: 1, group: 'Video thumbnail' },
+            { key: 'ffmpeg_path', label: 'FFmpeg path', type: 'string', group: 'Video thumbnail' },
+            { key: 'maxMediaSizeMB', label: 'Max media upload size (MB)', type: 'number', min: 1, max: 102400, step: 1, group: 'Uploads' },
+            { key: 'maxFileSizeMB', label: 'Max other file upload size (MB)', type: 'number', min: 1, max: 102400, step: 1, group: 'Uploads' },
+            { key: 'uploadChunkSizeMB', label: 'Upload chunk size (MB)', type: 'number', min: 1, max: 32, step: 1, group: 'Uploads' }
         ]
     }
 
@@ -3803,7 +3921,7 @@ exports.init = async api => {
             } catch {}
         }
 
-        // 分類清單（可包含目前沒有 tab 的分類），並附上各自的 tab 數量
+        // 分類清單（可包含目前沒有 tab 的分類），並附上各自??tab 數量
         const categoryCounts = {}
         for (const tab of tabData) {
             const cat = tab.category || ''
@@ -3900,7 +4018,7 @@ exports.init = async api => {
         const removed = [...oldNames].filter(n => !nameSet.has(n))
         const added = names.filter(n => !oldNames.has(n))
 
-        // 先將被移除 tab 的資料庫與附件移到 trash，tabList 寫入成功後再真正刪除
+        // 先將被移??tab 的資料庫與附件移??trash，tabList 寫入成功後再真正刪除
         const staged = []
         try {
             for (const name of removed) {
@@ -3919,7 +4037,7 @@ exports.init = async api => {
             await api.setConfig('tabList', newList)
         } catch {
             isApplyingTabList = false
-            // 設定沒寫成功就把暫存的 tab 資料搬回去
+            // 設定沒寫成功就把暫存??tab 資料搬回??
             for (const item of staged) await restoreStagedTabStorage(item.moves)
             ctx.status = 500
             ctx.body = { error: 'Cannot save tab list' }
@@ -3959,7 +4077,7 @@ exports.init = async api => {
         }
         tabsMap.categoryOrder = categoryOrder
 
-        // 每個 category 內的順序（與全域 order 完全獨立）
+        // 每??category 內的順序（與全域 order 完全獨立??
         const providedOrders = (body.categoryOrders && typeof body.categoryOrders === 'object')
             ? body.categoryOrders
             : (tabsMap.categoryTabOrders || {})
@@ -4037,7 +4155,7 @@ exports.init = async api => {
 
         const removed = [...oldCategories].filter(cat => !seen.has(cat))
 
-        // 被移除的分類：其下 tab 回到未分類，資料本身不動
+        // 被移除的分類：其??tab 回到未分類，資料本身不動
         let tabListChanged = false
         const tabList = (api.getConfig('tabList') || []).map(t => ({ ...t }))
         for (const tab of tabList) {
@@ -4057,7 +4175,7 @@ exports.init = async api => {
             if (cat.name !== cat.key) tabsMap.categoryNames[cat.key] = cat.name
         }
 
-        // 分類被移除時，其 tab 的 category 已改成 ''，順序也搬到未分類
+        // 分類被移除時，其 tab ??category 已改??''，順序也搬到未分??
         const previousCategoryOrders = (tabsMap.categoryTabOrders && typeof tabsMap.categoryTabOrders === 'object')
             ? tabsMap.categoryTabOrders
             : {}
@@ -4160,6 +4278,288 @@ exports.init = async api => {
         ctx.status = 200
     }
 
+    async function adminCollapseTab(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!isHfsAdmin(username)) { ctx.status = 403; ctx.body = { error: 'Admin only' }; return }
+
+        const body = await readJsonBody(ctx)
+        const tab = String(body.tab || '')
+        if (!tab || !getTabs().includes(tab)) { ctx.status = 400; ctx.body = { error: 'Invalid tab' }; return }
+
+        const index = await loadTabIndex(tab)
+        let collapsed = 0
+        let total = 0
+        for (const ts of Object.keys(index.notes || {})) {
+            total++
+            if (!index.notes[ts].collapsed) {
+                index.notes[ts].collapsed = true
+                collapsed++
+            }
+        }
+        if (collapsed > 0) await saveTabIndex(tab, index)
+
+        api.notifyClient('notes', 'collapseAll', { tab })
+        ctx.body = { ok: true, tab, collapsed, total }
+        ctx.status = 200
+    }
+
+    async function adminCleanCategoryOrphans(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!isHfsAdmin(username)) { ctx.status = 403; ctx.body = { error: 'Admin only' }; return }
+        if (isBackupRunning || isRestoring) { ctx.status = 409; ctx.body = { error: 'A backup or restore is running' }; return }
+
+        const body = await readJsonBody(ctx)
+        const allCategories = body.category === undefined || body.category === null || body.category === '*'
+        const category = allCategories ? '' : String(body.category)
+        const tabs = allCategories
+            ? getTabs()
+            : getTabs().filter(tab => ((getTabConfig(tab) || {}).category || '') === category)
+
+        let added = 0
+        let removed = 0
+        for (const tab of tabs) {
+            try {
+                const stats = await reconcileTabIndex(tab, { force: true })
+                added += stats ? stats.added : 0
+                removed += stats ? stats.removed : 0
+            } catch {}
+        }
+
+        // 以「所??tab」的引用為準，避免刪到其??tab 仍在使用的附??
+        const refs = await collectReferencedAttachmentIds(getTabs())
+        let deleted = 0
+        let freedBytes = 0
+        for (const tab of tabs) {
+            try {
+                const result = await cleanTabOrphanAttachments(tab, refs)
+                deleted += result.deleted
+                freedBytes += result.freedBytes
+            } catch {}
+        }
+
+        ctx.body = {
+            ok: true,
+            category: allCategories ? null : category,
+            allCategories,
+            tabs: tabs.length,
+            added,
+            removed,
+            deleted,
+            freedBytes,
+            freedReadable: formatBytes(freedBytes)
+        }
+        ctx.status = 200
+    }
+
+    async function adminMigrateTabContent(ctx) {
+        const username = getCurrentUsername(ctx)
+        if (!isHfsAdmin(username)) { ctx.status = 403; ctx.body = { error: 'Admin only' }; return }
+        if (isRestoring) { ctx.status = 409; ctx.body = { error: 'A restore is running' }; return }
+        // 備份可能正在讀取同一個 tab；先等它結束，避免遷移與備份互相踩踏
+        for (let i = 0; i < 40 && isBackupRunning; i++) {
+            await new Promise(resolve => setTimeout(resolve, 250))
+        }
+        if (isBackupRunning) { ctx.status = 409; ctx.body = { error: 'A backup is running, try again shortly' }; return }
+
+        const body = await readJsonBody(ctx)
+        const source = String(body.source || '')
+        const target = String(body.target || '')
+        const allTabs = getTabs()
+        if (!allTabs.includes(source) || !allTabs.includes(target) || source === target) {
+            ctx.status = 400
+            ctx.body = { error: 'Invalid source or target tab' }
+            return
+        }
+
+        const sourceIndex = await loadTabIndex(source)
+        const targetIndex = await loadTabIndex(target)
+        const sourceTsList = Object.keys(sourceIndex.notes || {}).sort()
+        if (sourceTsList.length === 0) {
+            ctx.status = 400
+            ctx.body = { error: 'Source tab has no notes to migrate' }
+            return
+        }
+
+        const targetNotes = { ...(targetIndex.notes || {}) }
+        const mappings = { img: new Map(), mov: new Map(), att: new Map() }
+        const copiedFiles = []
+        const copiedThumbs = []
+        const missing = []
+        const migrateItems = []
+        let skipped = 0
+
+        const safeAttachmentId = id => typeof id === 'string' && id.length > 0 && id.length < 200
+            && path.basename(id) === id && !id.includes('/') && !id.includes('\\')
+        const targetThumbDir = getTabThumbDir(target)
+        await ensureDir(getTabImgDir(target))
+        await ensureDir(getTabMovDir(target))
+        await ensureDir(getTabAttDir(target))
+        await ensureDir(targetThumbDir)
+
+        const uniqueAttachmentId = (dir, originalName) => {
+            let id = generateFileId(originalName)
+            while (fss.existsSync(path.join(dir, id))) id = generateFileId(originalName)
+            return id
+        }
+
+        const copyWithRetry = async (src, dst, label) => {
+            let lastError = null
+            for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                    await fs.copyFile(src, dst)
+                    return
+                } catch (e) {
+                    lastError = e
+                    await new Promise(resolve => setTimeout(resolve, 200))
+                }
+            }
+            const code = lastError && lastError.code ? ` (${lastError.code})` : ''
+            throw new Error(`Cannot copy "${label}"${code}`)
+        }
+
+        const copyImageThumb = async (oldId, newId) => {
+            const src = path.join(getTabThumbDir(source), oldId)
+            if (!fss.existsSync(src)) return
+            const dst = path.join(targetThumbDir, newId)
+            try {
+                await copyWithRetry(src, dst, path.basename(src))
+                copiedThumbs.push(src)
+            } catch {}
+        }
+
+        const copyVideoThumbs = async (oldId, newId) => {
+            const oldBase = path.basename(oldId, path.extname(oldId))
+            const newBase = path.basename(newId, path.extname(newId))
+            for (const ext of ['.jpg', '.gif']) {
+                const src = path.join(getTabThumbDir(source), oldBase + ext)
+                if (!fss.existsSync(src)) continue
+                try {
+                    await copyWithRetry(src, path.join(targetThumbDir, newBase + ext), path.basename(src))
+                    copiedThumbs.push(src)
+                } catch {}
+            }
+        }
+
+        const copyAttachment = async (type, oldId) => {
+            if (mappings[type].has(oldId)) return mappings[type].get(oldId)
+            if (!safeAttachmentId(oldId)) {
+                mappings[type].set(oldId, oldId)
+                missing.push(`${type}:${oldId}`)
+                return oldId
+            }
+            const srcDir = type === 'img' ? getTabImgDir(source) : type === 'mov' ? getTabMovDir(source) : getTabAttDir(source)
+            const dstDir = type === 'img' ? getTabImgDir(target) : type === 'mov' ? getTabMovDir(target) : getTabAttDir(target)
+            const src = path.join(srcDir, oldId)
+            if (!fss.existsSync(src)) {
+                mappings[type].set(oldId, oldId)
+                missing.push(`${type}:${oldId}`)
+                return oldId
+            }
+            const newId = uniqueAttachmentId(dstDir, oldId)
+            await copyWithRetry(src, path.join(dstDir, newId), path.basename(src))
+            mappings[type].set(oldId, newId)
+            copiedFiles.push(src)
+            if (type === 'img') await copyImageThumb(oldId, newId)
+            if (type === 'mov') await copyVideoThumbs(oldId, newId)
+            return newId
+        }
+
+        const replaceRefs = (content, type, oldId, newId) => {
+            if (oldId === newId) return content
+            if (type === 'img') return content.split(`[img:${oldId}]`).join(`[img:${newId}]`)
+            return content.split(`[${type}:${oldId}:`).join(`[${type}:${newId}:`)
+        }
+
+        const tsIsFree = ts => !targetNotes[ts] && !fss.existsSync(getNoteFilePath(target, ts))
+        const makeUniqueTs = ts => {
+            if (tsIsFree(ts)) return ts
+            const base = Date.parse(ts)
+            let offset = 1
+            let candidate = ts
+            do {
+                candidate = isFinite(base) ? new Date(base + offset).toISOString() : `${ts}-${offset}`
+                offset++
+            } while (!tsIsFree(candidate) && offset < 10000)
+            return candidate
+        }
+
+        for (const oldTs of sourceTsList) {
+            let content = await loadNoteContent(source, oldTs)
+            if (content == null) {
+                skipped++
+                continue
+            }
+
+            for (const oldId of extractImageIds(content)) {
+                const newId = await copyAttachment('img', oldId)
+                content = replaceRefs(content, 'img', oldId, newId)
+            }
+            for (const oldId of extractMovIds(content)) {
+                const newId = await copyAttachment('mov', oldId)
+                content = replaceRefs(content, 'mov', oldId, newId)
+            }
+            for (const oldId of extractAttIds(content)) {
+                const newId = await copyAttachment('att', oldId)
+                content = replaceRefs(content, 'att', oldId, newId)
+            }
+
+            const newTs = makeUniqueTs(oldTs)
+            targetNotes[newTs] = { ...sourceIndex.notes[oldTs] }
+            migrateItems.push({ oldTs, newTs, content })
+        }
+
+        if (migrateItems.length === 0) {
+            ctx.status = 400
+            ctx.body = { error: 'No readable notes to migrate', skipped }
+            return
+        }
+
+        try {
+            // 先寫入內容，再更新索引；最後才清空來源
+            for (const item of migrateItems) {
+                await saveNoteContent(target, item.newTs, item.content)
+            }
+            // 依時間順序合併，讓前端與索引的排序一致
+            const sortedNotes = {}
+            for (const ts of Object.keys(targetNotes).sort()) sortedNotes[ts] = targetNotes[ts]
+            targetIndex.notes = sortedNotes
+            await saveTabIndex(target, targetIndex)
+
+            const emptySource = { ...sourceIndex, notes: {} }
+            await saveTabIndex(source, emptySource)
+
+            for (const ts of sourceTsList) {
+                await fs.unlink(getNoteFilePath(source, ts)).catch(() => {})
+            }
+            for (const src of copiedFiles) await fs.unlink(src).catch(() => {})
+            for (const src of copiedThumbs) await fs.unlink(src).catch(() => {})
+
+            tabUsageCache.delete(source)
+            tabUsageCache.delete(target)
+            lastIndexStats.delete(source)
+            lastIndexStats.delete(target)
+
+            api.notifyClient('notes', 'tabCleared', { tab: source })
+            api.notifyClient('notes', 'notesMerged', { tab: target, count: migrateItems.length, from: source })
+
+            ctx.body = {
+                ok: true,
+                source,
+                target,
+                movedNotes: migrateItems.length,
+                skipped,
+                movedAttachments: copiedFiles.length,
+                movedThumbs: copiedThumbs.length,
+                missingAttachments: missing.length,
+                sourceLeftEmpty: true
+            }
+            ctx.status = 200
+        } catch (e) {
+            ctx.status = 500
+            ctx.body = { error: 'Migration failed: ' + (e && e.message ? e.message : String(e)) }
+        }
+    }
+
     async function adminManageRepair(ctx) {
         const username = getCurrentUsername(ctx)
         if (!isHfsAdmin(username)) { ctx.status = 403; ctx.body = { error: 'Admin only' }; return }
@@ -4229,7 +4629,7 @@ exports.init = async api => {
     }
 
     // ============================================
-    // 分塊上傳：接收單一 chunk（JSON + base64）
+    // 分塊上傳：接收單一 chunk（JSON + base64??
     // ============================================
     async function uploadChunk(ctx) {
         const username = getCurrentUsername(ctx)
@@ -4250,6 +4650,16 @@ exports.init = async api => {
                 ctx.body = { error: 'Missing chunk fields' }
                 return
             }
+            if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(uploadId))) {
+                ctx.status = 400
+                ctx.body = { error: 'Invalid uploadId' }
+                return
+            }
+            if (!Number.isInteger(index) || !Number.isInteger(totalChunks) || index < 0 || totalChunks < 1 || totalChunks > 100000 || index >= totalChunks) {
+                ctx.status = 400
+                ctx.body = { error: 'Invalid chunk index' }
+                return
+            }
 
             const buf = Buffer.from(data, 'base64')
             if (buf.length === 0) {
@@ -4261,7 +4671,7 @@ exports.init = async api => {
             const chunksDir = path.join(TEMP_DIR, 'chunks', uploadId)
             await ensureDir(chunksDir)
 
-            const maxChunkBytes = 8 * 1024 * 1024
+            const maxChunkBytes = getUploadChunkBytes() + 2 * 1024 * 1024
             if (buf.length > maxChunkBytes) {
                 ctx.status = 413
                 ctx.body = { error: 'Chunk too large' }
@@ -4293,7 +4703,7 @@ exports.init = async api => {
     }
 
     // ============================================
-    // 分塊上傳：合併所有 chunk，產生最終檔案
+    // 分塊上傳：合併所??chunk，產生最終檔??
     // ============================================
     async function uploadFinalize(ctx) {
         const username = getCurrentUsername(ctx)
@@ -4311,6 +4721,12 @@ exports.init = async api => {
         if (!uploadId || !totalChunks) {
             ctx.status = 400
             ctx.body = { error: 'Missing uploadId or totalChunks' }
+            return
+        }
+        if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(uploadId))
+            || !Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > 100000) {
+            ctx.status = 400
+            ctx.body = { error: 'Invalid upload session' }
             return
         }
 
@@ -4333,26 +4749,23 @@ exports.init = async api => {
                 return
             }
 
-            const buffers = []
-            for (const pf of partFiles) {
-                const buf = await fs.readFile(path.join(chunksDir, pf))
-                buffers.push(buf)
-            }
-            const finalBuffer = Buffer.concat(buffers)
-
-            if (finalBuffer.length === 0) {
-                ctx.status = 400
-                ctx.body = { error: 'Empty file after merge' }
-                return
-            }
-
             const mime = mimeType || 'application/octet-stream'
             const isImage = mime.startsWith('image/')
             const isVideo = mime.startsWith('video/')
             const isAudio = mime.startsWith('audio/')
+            const maxSize = getUploadLimitBytes(mime)
 
-            const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
-            if (finalBuffer.length > maxSize) {
+            let totalSize = 0
+            for (const pf of partFiles) {
+                const st = await fs.stat(path.join(chunksDir, pf)).catch(() => null)
+                if (st) totalSize += st.size
+            }
+            if (totalSize === 0) {
+                ctx.status = 400
+                ctx.body = { error: 'Empty file after merge' }
+                return
+            }
+            if (totalSize > maxSize) {
                 ctx.status = 413
                 ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }
                 fs.rm(chunksDir, { recursive: true, force: true }).catch(() => {})
@@ -4365,7 +4778,33 @@ exports.init = async api => {
             await ensureDir(TEMP_DIR)
             const fileId = generateFileId(origName)
             const filePath = path.join(TEMP_DIR, fileId)
-            await fs.writeFile(filePath, finalBuffer)
+
+            // 逐段拼接，避免把整份大檔案同時放進記憶體
+            const fh = await fs.open(filePath, 'w')
+            let written = 0
+            try {
+                for (const pf of partFiles) {
+                    const data = await fs.readFile(path.join(chunksDir, pf))
+                    written += data.length
+                    if (written > maxSize) {
+                        throw Object.assign(new Error('File too large'), { status: 413 })
+                    }
+                    await fh.write(data)
+                }
+            } catch (writeErr) {
+                await fh.close().catch(() => {})
+                await fs.unlink(filePath).catch(() => {})
+                await fs.rm(chunksDir, { recursive: true, force: true }).catch(() => {})
+                if (writeErr.status === 413) {
+                    ctx.status = 413
+                    ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }
+                } else {
+                    ctx.status = 500
+                    ctx.body = { error: 'Finalize failed: ' + (writeErr.message || String(writeErr)) }
+                }
+                return
+            }
+            await fh.close().catch(() => {})
 
             const tempMapPath = path.join(TEMP_DIR, '_temp_names.json')
             let tempNameMap = {}
@@ -4376,12 +4815,14 @@ exports.init = async api => {
             await fs.writeFile(tempMapPath, JSON.stringify(tempNameMap))
 
             let hasThumb = false
-            if (isImage) {
+            if (isImage && totalSize <= 200 * 1024 * 1024) {
+                // 超大圖片跳過縮圖，避免把整張圖讀進記憶體
+                const imageBuffer = await fs.readFile(filePath)
                 const thumbDir = await ensureDir(THUMB_BASE_DIR)
                 const thumbSubDir = path.join(thumbDir, '_temp')
                 await ensureDir(thumbSubDir)
                 const thumbPath = path.join(thumbSubDir, fileId)
-                hasThumb = await generateThumbnail(finalBuffer, thumbPath)
+                hasThumb = await generateThumbnail(imageBuffer, thumbPath)
             }
 
             fs.rm(chunksDir, { recursive: true, force: true }).catch(() => {})
@@ -4406,7 +4847,7 @@ exports.init = async api => {
     }
 
     // ============================================
-    // 舊版上傳：單次 JSON + base64（保留兼容，小檔案可用）
+    // 舊版上傳：單??JSON + base64（保留兼容，小檔案可用）
     // ============================================
     async function uploadFileToTemp(ctx) {
         const username = getCurrentUsername(ctx)
@@ -4427,7 +4868,7 @@ exports.init = async api => {
             if (fileBuffer.length === 0) { ctx.status = 400; ctx.body = { error: 'Empty file' }; return }
 
             const isImage = mimeType.startsWith('image/')
-            const maxSize = isImage ? MAX_IMG_SIZE : MAX_FILE_SIZE
+            const maxSize = getUploadLimitBytes(mimeType)
             if (fileBuffer.length > maxSize) {
                 ctx.status = 413; ctx.body = { error: `File too large (max ${formatBytes(maxSize)})` }; return
             }
@@ -4726,7 +5167,7 @@ exports.init = async api => {
 
     const NOTES_ADMIN_ASSET_VERSION = `${exports.version}-${Date.now()}`
 
-    // 把 Notes 管理頁注入到 /~/admin/ 的 HTML，由 admin-tab.js 在 Plugins 頁面上加一個頂部 tab
+    // ??Notes 管理頁注入到 /~/admin/ ??HTML，由 admin-tab.js ??Plugins 頁面上加一個頂??tab
     function injectNotesAdminTab(ctx) {
         if (typeof ctx.body !== 'string' || ctx.body.includes('notes-admin-tab')) return
         const base = `${ctx.state?.revProxyPath || ''}/~/plugins/Notes/`
@@ -4828,6 +5269,9 @@ exports.init = async api => {
             if (p === `${ADMIN_API}manage/categories` && method === 'POST') { await adminManageCategories(ctx); return }
             if (p === `${ADMIN_API}manage/settings` && method === 'POST') { await adminManageSettings(ctx); return }
             if (p === `${ADMIN_API}manage/repair` && method === 'POST') { await adminManageRepair(ctx); return }
+            if (p === `${ADMIN_API}manage/collapse-tab` && method === 'POST') { await adminCollapseTab(ctx); return }
+            if (p === `${ADMIN_API}manage/clean-orphans` && method === 'POST') { await adminCleanCategoryOrphans(ctx); return }
+            if (p === `${ADMIN_API}manage/migrate-tab-content` && method === 'POST') { await adminMigrateTabContent(ctx); return }
             if (p === `${ADMIN_API}manage/backup-delete` && method === 'POST') { await adminManageBackupDelete(ctx); return }
             if (p === `${ADMIN_API}manage/backup-cleanup` && method === 'POST') { await adminManageBackupCleanup(ctx); return }
             if (p === `${ADMIN_API}manage/backup-download` && method === 'GET') { await adminManageBackupDownload(ctx); return }

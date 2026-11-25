@@ -164,12 +164,27 @@ function toLocalDatetimeValue(isoTs) {
 // 上傳：分塊上傳（JSON + base64，每塊 1MB）
 // 避免單次 body 過大被 HFS 核心層中斷
 // ============================================
-const UPLOAD_CHUNK_SIZE = 1024 * 1024; // 1MB per chunk
+const NOTES_PLUGIN_CONFIG = (() => {
+    try { return HFS.getPluginConfig() || {}; } catch { return {}; }
+})();
+const UPLOAD_CHUNK_MB = Math.min(32, Math.max(1, Number(NOTES_PLUGIN_CONFIG.uploadChunkSizeMB) || 4));
+const UPLOAD_CHUNK_SIZE = UPLOAD_CHUNK_MB * 1024 * 1024;
+
+function getUploadLimitMB(mimeType) {
+    const media = /^(image|video|audio)\//i.test(String(mimeType || ''));
+    const configured = Number(media ? NOTES_PLUGIN_CONFIG.maxMediaSizeMB : NOTES_PLUGIN_CONFIG.maxFileSizeMB);
+    return Math.max(1, isFinite(configured) && configured > 0 ? configured : (media ? 1024 : 2048));
+}
 
 async function uploadFile(file) {
     const rawName = file.name;
     const safeName = safeFileName(rawName);
     const displayName = safeDisplayName(rawName);
+
+    const limitMB = getUploadLimitMB(file.type);
+    if (file.size > limitMB * 1024 * 1024) {
+        throw new Error(`File too large: ${(file.size / 1024 / 1024).toFixed(1)} MB (max ${limitMB} MB)`);
+    }
 
     const uploadId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     const totalChunks = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
@@ -343,7 +358,7 @@ async function uploadFile(file) {
     }
 
     // ========== NoteItem 组件 ==========
-    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat, isVisible = false, onEditingChange, isEditingThis, onPaste, onRenameTs }) {
+    function NoteItem({ note, onDelete, onEdit, onToggleStar, onToggleCollapse, searchTerm, activeMatches, noteRef, activeTab, fontSize, thumbMap, attNames, isFullscreenColumn, tabName, thumbFormat, isVisible = false, onEditingChange, isEditingThis, onPaste, onRenameTs, collapseSignal }) {
         const { u, ts, starred, collapsed } = note;
         const isPending = note._pending === true;
         const summaryText = note.s || (note.m ? note.m.substring(0, 200) : '');
@@ -425,6 +440,11 @@ async function uploadFile(file) {
                 globalActiveTab = '';
             }
         }, [activeTab, ts, effectiveTab]);
+
+        // 伺服器端的「全部收起」等操作更新 collapsed 時，清掉本地的暫時狀態
+        useEffect(() => {
+            setLocalCollapsed(null);
+        }, [collapsed, collapseSignal]);
 
         useEffect(() => {
             if (editing && textareaRef.current) {
@@ -1687,6 +1707,7 @@ async function uploadFile(file) {
             } catch { return ''; }
         });
         const [notes, setNotes] = useState([]);
+        const [collapseSignal, setCollapseSignal] = useState(0);
         const [tabCounts, setTabCounts] = useState({});
         const [isMobile, setIsMobile] = useState(false);
         const [storageWarning, setStorageWarning] = useState(false);
@@ -1746,6 +1767,7 @@ async function uploadFile(file) {
         const fullscreenGridRef = useRef(null);
         const esRef = useRef(null);
         const loadNotesAbortControllerRef = useRef(null);
+        const reloadActiveNotesRef = useRef(null);
 
         const scrollToNoteAfterTabSwitchRef = useRef(null);
 
@@ -2161,6 +2183,12 @@ async function uploadFile(file) {
                         setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, starred: data.starred } : n));
                     } else if (e === 'toggleCollapse') {
                         setNotes(prev => prev.map(n => n.ts === data.ts ? { ...n, collapsed: data.collapsed } : n));
+                    } else if (e === 'collapseAll') {
+                        if (!data.tab || data.tab === activeTabRef.current) {
+                            setNotes(prev => prev.map(n => ({ ...n, collapsed: true })));
+                            // 即使 note 的 collapsed 已經是 true，也強制前端清掉本地展開狀態
+                            setCollapseSignal(v => v + 1);
+                        }
                     } else if (e === 'deleteNote') {
                         setNotes(prev => prev.filter(n => n.ts !== data.ts));
                         loadTabs();
@@ -2170,6 +2198,16 @@ async function uploadFile(file) {
                         setHasMore(false);
                         setCurrentOffset(0);
                         delete tabCacheRef.current[data.tab];
+                        loadTabs();
+                    } else if (e === 'notesMerged') {
+                        if (data.tab === activeTabRef.current) {
+                            fullContentFallbackRef.current = {};
+                            setNotes([]);
+                            setHasMore(false);
+                            setCurrentOffset(0);
+                            delete tabCacheRef.current[data.tab];
+                            reloadActiveNotesRef.current?.(data.tab, false);
+                        }
                         loadTabs();
                     }
                 });
@@ -3451,6 +3489,7 @@ async function uploadFile(file) {
                 }
             }
         }, [thumbMap, attNames, isFullscreen, activeTab]);
+        reloadActiveNotesRef.current = loadNotes;
 
         const searchAllNotes = useCallback(async (tab, searchTerm) => {
             if (!tab || !searchTerm || isSearchingAll) return;
@@ -4491,7 +4530,8 @@ async function uploadFile(file) {
                                         thumbFormat: tabData.thumbFormat,
                                         onEditingChange: null,
                                         onPaste: handlePaste,
-                                        onRenameTs: handleRenameTs
+                                        onRenameTs: handleRenameTs,
+                                        collapseSignal: collapseSignal
                                     })) :
                                     h('div', { className: 'note-empty' }, isActive ? 'No notes' : 'Loading...')
                             )
@@ -4546,7 +4586,8 @@ async function uploadFile(file) {
                                 onEditingChange: handleEditingChange,
                                 isEditingThis: isEditingMode && note.ts === editingNoteTs,
                                 onPaste: handlePaste,
-                                onRenameTs: handleRenameTs
+                                onRenameTs: handleRenameTs,
+                                collapseSignal: collapseSignal
                             });
                         }) :
                         h('div', { className: 'note-empty' }, searchTerm ? 'No matches found' : (starFilterActive ? 'No starred notes.' : 'No notes yet.'))

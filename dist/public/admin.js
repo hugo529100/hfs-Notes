@@ -167,7 +167,14 @@
     function makeCategoriesSection() {
         return el('section', { class: 'block' },
             el('div', { class: 'block-head' },
-                el('h2', { text: 'Categories & order' })
+                el('h2', { text: 'Categories & order' }),
+                el('div', { class: 'row-actions' },
+                    el('button', {
+                        class: 'primary',
+                        title: 'Scan every tab and clean orphan note entries and unreferenced attachments',
+                        onClick: cleanAllOrphans
+                    }, 'Scan & clean orphan files')
+                )
             ),
             el('div', { class: 'notice' },
                 'Categories are independent here: add, rename, reorder or remove them even when empty. ',
@@ -182,14 +189,14 @@
         if (!wrap) return
         wrap.replaceChildren()
 
-        const table = el('table')
+        const table = el('table', { class: 'category-table' })
         table.append(el('thead', {},
             el('tr', {},
-                el('th', { text: '' }),
-                el('th', { text: 'Display name' }),
-                el('th', { class: 'hide-sm', text: 'Key' }),
-                el('th', { class: 'num', text: 'Tabs' }),
-                el('th', { text: '' })
+                el('th', { class: 'cat-handle', text: '' }),
+                el('th', { class: 'cat-name', text: 'Display name' }),
+                el('th', { class: 'cat-key', text: 'Key' }),
+                el('th', { class: 'cat-count num', text: 'Tabs' }),
+                el('th', { class: 'cat-actions', text: '' })
             )
         ))
 
@@ -258,11 +265,11 @@
             }, '✕')
 
             row.append(
-                el('td', {}, handle),
-                el('td', {}, nameInput),
-                el('td', { class: 'hide-sm small-muted', text: cat.key }),
-                el('td', { class: 'num', text: String(count) }),
-                el('td', {}, el('div', { class: 'row-actions' },
+                el('td', { class: 'cat-handle' }, handle),
+                el('td', { class: 'cat-name' }, nameInput),
+                el('td', { class: 'cat-key small-muted', text: cat.key }),
+                el('td', { class: 'cat-count num', text: String(count) }),
+                el('td', { class: 'cat-actions' }, el('div', { class: 'row-actions' },
                     el('button', { class: 'small', title: 'Move up', disabled: index === 0, onClick: () => moveCategory(index, index - 1) }, '▲'),
                     el('button', { class: 'small', title: 'Move down', disabled: index === state.draftCategories.length - 1, onClick: () => moveCategory(index, index + 1) }, '▼'),
                     remove
@@ -303,6 +310,231 @@
         renderCategories()
         renderGroupedTabs()
         autoSaveNow({ structural: true })
+    }
+
+    // ============================================
+    // Data migration: move a tab (with all its notes/attachments) to another category
+    // ============================================
+    function makeMigrationSection() {
+        const body = el('div', { class: 'collapsible-body', id: 'migration-body', hidden: true })
+        body.append(
+            el('h3', { text: 'Move tab to another category' }),
+            el('div', { class: 'notice' },
+                'Move a tab to another category. The tab folder, all notes, metadata and uploaded attachments stay with the tab; nothing is copied or deleted.'
+            ),
+            el('div', { id: 'migration-form' }),
+            el('hr', { class: 'section-divider' }),
+            el('h3', { text: 'Move all content from one tab to another' }),
+            el('div', { class: 'notice' },
+                'Moves every note and referenced attachment from the source tab into the target tab, then leaves the source tab empty. Existing target notes are kept; duplicate timestamps are shifted.'
+            ),
+            el('div', { id: 'tab-content-migration-form' })
+        )
+
+        const toggle = el('button', { class: 'small', type: 'button', 'aria-expanded': 'false' }, 'Expand')
+        toggle.addEventListener('click', () => {
+            const opening = body.hidden
+            body.hidden = !opening
+            toggle.textContent = opening ? 'Collapse' : 'Expand'
+            toggle.setAttribute('aria-expanded', String(opening))
+        })
+
+        return el('section', { class: 'block' },
+            el('div', { class: 'block-head' },
+                el('h2', { text: 'Data migration' }),
+                el('div', { class: 'row-actions' }, toggle)
+            ),
+            body
+        )
+    }
+
+    function categoryChoices() {
+        const keys = state.draftCategories.map(cat => cat.key)
+        if (state.draftTabs.some(tab => !tabCategoryKey(tab))) keys.push('')
+        return keys
+    }
+
+    function renderMigrationForm() {
+        const wrap = $('#migration-form')
+        if (!wrap) return
+        wrap.replaceChildren()
+
+        const choices = categoryChoices()
+        if (choices.length < 2) {
+            wrap.append(el('div', { class: 'empty', text: 'Create at least two categories (or an uncategorized tab) to migrate a tab.' }))
+            return
+        }
+
+        let initialSource = choices.find(key => orderedTabsForCategory(key).length > 0) ?? choices[0]
+
+        const sourceSelect = el('select', { 'aria-label': 'Source category' })
+        fillCategoryOptions(sourceSelect, choices)
+        sourceSelect.value = initialSource
+
+        const tabSelect = el('select', { 'aria-label': 'Tab to migrate' })
+
+        const targetSelect = el('select', { 'aria-label': 'Target category' })
+
+        const preview = el('div', { class: 'migration-summary' })
+        const button = el('button', { class: 'primary', type: 'button' }, 'Migrate tab')
+
+        const getSelectedTab = () => state.draftTabs.find(tab => tab.name === tabSelect.value)
+
+        const refreshTargets = () => {
+            const source = sourceSelect.value
+            const targets = choices.filter(key => key !== source)
+            targetSelect.replaceChildren()
+            fillCategoryOptions(targetSelect, targets)
+            targetSelect.value = targets[0] ?? ''
+        }
+
+        const refreshTabs = () => {
+            const source = sourceSelect.value
+            const tabs = orderedTabsForCategory(source)
+            tabSelect.replaceChildren()
+            for (const tab of tabs) {
+                tabSelect.append(el('option', { value: tab.name }, tabDisplayName(tab)))
+            }
+            tabSelect.disabled = tabs.length === 0
+            button.disabled = tabs.length === 0
+            refreshTargets()
+            updatePreview()
+        }
+
+        const updatePreview = () => {
+            const tab = getSelectedTab()
+            if (!tab) {
+                preview.textContent = 'No tab in this category.'
+                return
+            }
+            const stats = getTabStats(tab.name)
+            const notes = stats ? stats.indexCount : 0
+            const att = stats && stats.attachments ? stats.attachments : null
+            preview.textContent = `${tab.name}: ${notes} note(s)` + (att ? ` · ${att.totalCount} attachment file(s), ${formatBytes(att.totalSize)}` : '')
+        }
+
+        sourceSelect.addEventListener('change', refreshTabs)
+        tabSelect.addEventListener('change', updatePreview)
+        button.addEventListener('click', async () => {
+            const tab = getSelectedTab()
+            const source = sourceSelect.value
+            const target = targetSelect.value
+            if (!tab || target === source) return
+
+            const stats = getTabStats(tab.name)
+            const oldCategory = source
+            state.draftCategoryTabOrders[oldCategory] = (state.draftCategoryTabOrders[oldCategory] || [])
+                .filter(name => name !== tab.name)
+            tab.category = target
+            const targetOrder = state.draftCategoryTabOrders[target] || []
+            if (!targetOrder.includes(tab.name)) targetOrder.push(tab.name)
+            state.draftCategoryTabOrders[target] = targetOrder
+
+            renderTabOrder()
+            renderGroupedTabs()
+            await autoSaveNow({ structural: true })
+            setStatus(`Migrated "${tab.name}" from ${categoryName(oldCategory)} to ${categoryName(target)}` +
+                (stats ? ` (${stats.indexCount} notes, ${stats.attachments ? stats.attachments.totalCount : 0} files)` : '') +
+                '. Notes and attachments remain with the tab.')
+        })
+        wrap.append(
+            el('div', { class: 'migration-form' },
+                el('div', { class: 'migration-field' }, el('label', { text: 'From category' }), sourceSelect),
+                el('div', { class: 'migration-field' }, el('label', { text: 'Tab' }), tabSelect),
+                el('div', { class: 'migration-field' }, el('label', { text: 'To category' }), targetSelect),
+                el('div', { class: 'migration-field migration-action' }, button)
+            ),
+            preview
+        )
+        refreshTabs()
+    }
+
+    function renderTabContentMigrationForm() {
+        const wrap = $('#tab-content-migration-form')
+        if (!wrap) return
+        wrap.replaceChildren()
+
+        const tabs = state.draftTabs
+        if (tabs.length < 2) {
+            wrap.append(el('div', { class: 'empty', text: 'Create at least two tabs to migrate content between them.' }))
+            return
+        }
+
+        const sourceSelect = el('select', { 'aria-label': 'Source tab' })
+        const targetSelect = el('select', { 'aria-label': 'Target tab' })
+        const preview = el('div', { class: 'migration-summary' })
+        const button = el('button', { class: 'primary', type: 'button' }, 'Move all content')
+
+        for (const tab of tabs) {
+            sourceSelect.append(el('option', { value: tab.name }, tabDisplayName(tab)))
+        }
+
+        const statsFor = name => getTabStats(name)
+        const updateTargets = () => {
+            const source = sourceSelect.value
+            targetSelect.replaceChildren()
+            for (const tab of tabs) {
+                if (tab.name === source) continue
+                targetSelect.append(el('option', { value: tab.name }, tabDisplayName(tab)))
+            }
+            targetSelect.disabled = targetSelect.options.length === 0
+            button.disabled = targetSelect.disabled
+            updatePreview()
+        }
+
+        const updatePreview = () => {
+            const source = sourceSelect.value
+            const target = targetSelect.value
+            const src = statsFor(source)
+            const dst = statsFor(target)
+            const fmt = stats => stats
+                ? `${stats.indexCount} note(s), ${stats.attachments ? stats.attachments.totalCount : 0} file(s)`
+                : '0 note(s)'
+            preview.textContent = `${source}: ${fmt(src)}  →  ${target}: ${fmt(dst)}`
+            if (src && src.indexCount === 0) {
+                preview.textContent += ' · source has no notes'
+                button.disabled = true
+            } else {
+                button.disabled = targetSelect.disabled
+            }
+        }
+
+        sourceSelect.addEventListener('change', updateTargets)
+        targetSelect.addEventListener('change', updatePreview)
+        button.addEventListener('click', async () => {
+            const source = sourceSelect.value
+            const target = targetSelect.value
+            if (!source || !target || source === target) return
+            setBusy(true)
+            setStatus(`Moving content from ${source} to ${target}…`)
+            try {
+                await autoSaveNow()
+                const res = await api('manage/migrate-tab-content', { method: 'POST', body: { source, target } })
+                await load()
+                setStatus(`Moved ${res.movedNotes || 0} note(s) and ${res.movedAttachments || 0} attachment file(s) from "${source}" to "${target}". Source tab is now empty.` +
+                    (res.missingAttachments ? ` ${res.missingAttachments} missing attachment(s) kept as references.` : ''))
+            } catch (e) {
+                setStatus('Tab migration failed: ' + e.message, true)
+            } finally {
+                setBusy(false)
+            }
+        })
+
+        wrap.append(
+            el('div', { class: 'migration-form' },
+                el('div', { class: 'migration-field' }, el('label', { text: 'From tab' }), sourceSelect),
+                el('div', { class: 'migration-field' }, el('label', { text: 'To tab' }), targetSelect),
+                el('div', { class: 'migration-field migration-action' }, button)
+            ),
+            preview
+        )
+        updateTargets()
+    }
+
+    function fillCategoryOptions(select, keys) {
+        for (const key of keys) {
+            select.append(el('option', { value: key }, key ? categoryName(key) : 'Uncategorized'))
+        }
     }
 
     // ============================================
@@ -438,18 +670,18 @@
                 continue
             }
 
-            const table = el('table')
+            const table = el('table', { class: 'tab-manage-table' })
             table.append(el('thead', {},
                 el('tr', {},
-                    el('th', { text: 'Tab' }),
-                    el('th', { text: 'Display name' }),
-                    el('th', { text: 'Category' }),
-                    el('th', { text: 'Public' }),
-                    el('th', { text: 'Allowed users' }),
-                    el('th', { class: 'num', text: 'Notes' }),
-                    el('th', { class: 'num hide-sm', text: 'Files' }),
-                    el('th', { class: 'num hide-sm', text: 'Attachments' }),
-                    el('th', { text: '' })
+                    el('th', { class: 'col-tab', text: 'Tab' }),
+                    el('th', { class: 'col-edit col-display', text: 'Display name' }),
+                    el('th', { class: 'col-edit col-category', text: 'Category' }),
+                    el('th', { class: 'col-edit col-public', text: 'Public' }),
+                    el('th', { class: 'col-edit col-users', text: 'Allowed users' }),
+                    el('th', { class: 'col-notes num', text: 'Notes' }),
+                    el('th', { class: 'col-files num', text: 'Files' }),
+                    el('th', { class: 'col-attach num', text: 'Attachments' }),
+                    el('th', { class: 'col-actions', text: '' })
                 )
             ))
             const tbody = el('tbody')
@@ -505,8 +737,9 @@
                     ? `img ${formatBytes(attachments.img.size)} (${attachments.img.count}), mov ${formatBytes(attachments.mov.size)} (${attachments.mov.count}), att ${formatBytes(attachments.att.size)} (${attachments.att.count}), thumb ${formatBytes(attachments.thumb.size)} (${attachments.thumb.count})`
                     : ''
 
-                const actions = el('td', {},
+                const actions = el('td', { class: 'col-actions' },
                     el('div', { class: 'row-actions' },
+                        el('button', { class: 'small', title: 'Collapse all expanded notes in this tab', onClick: () => collapseTabNotes(tab) }, '⊟'),
                         el('button', { class: 'small', title: 'Move up within this category', onClick: () => moveTabInCategory(tab, -1) }, '↑'),
                         el('button', { class: 'small', title: 'Move down within this category', onClick: () => moveTabInCategory(tab, 1) }, '↓'),
                         el('button', { class: 'small danger', title: 'Remove tab', onClick: () => removeTab(tab) }, '✕')
@@ -514,18 +747,18 @@
                 )
 
                 row.append(
-                    el('td', {}, nameCell),
-                    el('td', {}, displayInput),
-                    el('td', {}, makeCategorySelect(tab)),
-                    el('td', {}, publicCheck),
-                    el('td', {}, usersInput),
-                    el('td', { class: 'num' },
+                    el('td', { class: 'col-tab' }, nameCell),
+                    el('td', { class: 'col-edit col-display' }, displayInput),
+                    el('td', { class: 'col-edit col-category' }, makeCategorySelect(tab)),
+                    el('td', { class: 'col-edit col-public' }, publicCheck),
+                    el('td', { class: 'col-edit col-users' }, usersInput),
+                    el('td', { class: 'col-notes num' },
                         String(stats ? stats.indexCount : 0),
                         stats && stats.orphanCount ? el('span', { class: 'pill warn', text: '+' + stats.orphanCount, title: 'Recovered entries found in the last scan' }) : null,
                         stats && stats.missingCount ? el('span', { class: 'pill bad', text: '-' + stats.missingCount, title: 'Ghost entries removed in the last scan' }) : null
                     ),
-                    el('td', { class: 'num hide-sm', text: stats && stats.fileCount != null ? String(stats.fileCount) : '—' }),
-                    el('td', { class: 'num hide-sm', text: attachments ? formatBytes(attachments.totalSize) : '—', title: attachmentTitle }),
+                    el('td', { class: 'col-files num', text: stats && stats.fileCount != null ? String(stats.fileCount) : '—' }),
+                    el('td', { class: 'col-attach num', text: attachments ? formatBytes(attachments.totalSize) : '—', title: attachmentTitle }),
                     actions
                 )
                 tbody.append(row)
@@ -574,6 +807,37 @@
             addName, addCategory,
             el('button', { class: 'primary', onClick: add }, 'Add tab')
         ))
+
+        if ($('#migration-form')) {
+            renderMigrationForm()
+            renderTabContentMigrationForm()
+        }
+    }
+
+    async function cleanAllOrphans() {
+        setBusy(true)
+        setStatus('Scanning all tabs for orphan files…')
+        try {
+            await autoSaveNow()
+            const res = await api('manage/clean-orphans', { method: 'POST', body: {} })
+            await load()
+            setStatus(`Scanned ${res.tabs || 0} tabs: recovered ${res.added || 0} note(s), removed ${res.removed || 0} ghost entries, deleted ${res.deleted || 0} orphan file(s), freed ${res.freedReadable || '0 B'}`)
+        } catch (e) {
+            setStatus('Orphan cleanup failed: ' + e.message, true)
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    async function collapseTabNotes(tab) {
+        if (!confirm(`Collapse all expanded notes in tab "${tab.name}"?`)) return
+        setStatus(`Collapsing notes in ${tab.name}…`)
+        try {
+            const res = await api('manage/collapse-tab', { method: 'POST', body: { tab: tab.name } })
+            setStatus(`Collapsed all ${res.total || 0} note(s) in ${tab.name}`)
+        } catch (e) {
+            setStatus('Collapse failed: ' + e.message, true)
+        }
     }
 
     function moveTabInCategory(tab, step) {
@@ -892,7 +1156,7 @@
                     el('td', { class: 'backup-name' }, nameNode, row.packaged ? null : el('span', { class: 'pill warn', text: 'folder' })),
                     el('td', { class: 'num', text: row.sizeReadable || formatBytes(row.size) }),
                     el('td', { class: 'hide-sm', text: formatDate(row.created) }),
-                    el('td', {}, el('div', { class: 'row-actions' }, actions))
+                    el('td', { class: 'backup-actions' }, el('div', { class: 'row-actions' }, actions))
                 ))
             }
             table.append(tbody)
@@ -962,15 +1226,28 @@
     function makeSettingsSection() {
         const wrap = el('div', { id: 'settings-form' })
         const save = el('button', { class: 'primary', onClick: saveSettings }, 'Save settings')
-        return el('section', { class: 'block' },
-            el('div', { class: 'block-head' },
-                el('h2', { text: 'All settings' }),
-                el('div', { class: 'row-actions' }, save)
-            ),
+        const body = el('div', { class: 'collapsible-body', id: 'settings-body', hidden: true })
+        body.append(
             el('div', { class: 'notice' },
                 'These are the same values used by the plugin options. Tab-specific settings are managed in the tab table above.'
             ),
             wrap
+        )
+
+        const toggle = el('button', { class: 'small', type: 'button', 'aria-expanded': 'false' }, 'Expand')
+        toggle.addEventListener('click', () => {
+            const opening = body.hidden
+            body.hidden = !opening
+            toggle.textContent = opening ? 'Collapse' : 'Expand'
+            toggle.setAttribute('aria-expanded', String(opening))
+        })
+
+        return el('section', { class: 'block' },
+            el('div', { class: 'block-head' },
+                el('h2', { text: 'All settings' }),
+                el('div', { class: 'row-actions' }, toggle, save)
+            ),
+            body
         )
     }
 
@@ -986,10 +1263,12 @@
         }
 
         for (const [group, fields] of groups) {
-            wrap.append(el('h3', { text: group }))
+            const groupEl = el('div', { class: 'settings-group' })
+            groupEl.append(el('h3', { text: group }))
             const grid = el('div', { class: 'settings-grid' })
             for (const field of fields) grid.append(makeSettingField(field))
-            wrap.append(grid)
+            groupEl.append(grid)
+            wrap.append(groupEl)
         }
     }
 
@@ -1077,6 +1356,7 @@
             makeCategoriesSection(),
             makeTabOrderSection(),
             makeTabListSection(),
+            makeMigrationSection(),
             makeRepairSection(),
             makeBackupsSection(),
             makeSettingsSection(),
