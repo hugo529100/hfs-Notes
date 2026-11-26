@@ -240,12 +240,17 @@
         }
     }
 
+    let ensureQueued = false
     function scheduleEnsure() {
-        if (state.ensureTimer) return
-        state.ensureTimer = setTimeout(() => {
-            state.ensureTimer = null
+        if (ensureQueued) return
+        // Microtask: run once per DOM-mutation batch, before Chromium paints the
+        // freshly rendered tab strip, so the Notes tab appears together with the
+        // native tabs instead of popping in on the next frame.
+        ensureQueued = true
+        queueMicrotask(() => {
+            ensureQueued = false
             ensure()
-        }, 120)
+        })
     }
 
     // React 重新渲染、切換頁面後把 tab/panel 補回來
