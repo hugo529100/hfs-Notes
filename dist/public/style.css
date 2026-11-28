@@ -197,6 +197,8 @@ body.tree-resizing .note-panel.note-desktop {
     padding: 0 4px;
     line-height: 1;
     flex-shrink: 0;
+    height: 24px;
+    width: 24px;
 }
 
 .note-close-btn:hover {
@@ -211,6 +213,8 @@ body.tree-resizing .note-panel.note-desktop {
     padding: 2px 4px;
     color: var(--text);
     opacity: 0.8;
+    height: 24px;
+    width: 24px;
 }
 
 .note-search-toggle:hover {
@@ -892,6 +896,7 @@ body.tree-resizing .note-panel.note-desktop {
     padding: 2px 4px;
     line-height: 1;
     transition: opacity 0.2s;
+    height: 18px;
 }
 
 .note-item-starred .note-collapse-btn {
@@ -914,6 +919,7 @@ body.tree-resizing .note-panel.note-desktop {
     font-size: 1.3em;
     cursor: pointer;
     padding: 0 4px;
+    height: 18px;
 }
 
 .note-item-starred .note-delete-btn {
@@ -948,12 +954,19 @@ body.tree-resizing .note-panel.note-desktop {
     transition: all 0.2s;
     font-family: inherit;
     line-height: 1.4;
-    height: 24px;
+    height: 20px;
     width: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
 }
+
+.note-item-starred .note-edit-actions button {
+    background: var(--text);
+    border: 1px solid var(--faint-contrast);
+    color: var(--bg);
+}
+
 
 .note-edit-actions button:hover {
     background: var(--faint-contrast);
@@ -2195,7 +2208,7 @@ body.tree-resizing .note-panel.note-desktop {
     .note-edit-actions button {
         font-size: 0.8em;
         padding: 2px 6px;
-        height: 26px;
+        /*height: 26px;*/
         min-width: 26px;
     }
     
